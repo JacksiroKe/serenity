@@ -79,6 +79,10 @@ ByteBuffer HttpRequest::to_raw_request() const
         builder.append("\r\n");
     }
     builder.append("Connection: close\r\n\r\n");
+    if (!m_body.is_empty()) {
+        builder.append((const char*)m_body.data(), m_body.size());
+        builder.append("\r\n");
+    }
     return builder.to_byte_buffer();
 }
 
@@ -188,7 +192,7 @@ Optional<HttpRequest> HttpRequest::from_raw_request(const ByteBuffer& raw_reques
     return request;
 }
 
-void HttpRequest::set_headers(const HashMap<String,String>& headers)
+void HttpRequest::set_headers(const HashMap<String, String>& headers)
 {
     for (auto& it : headers)
         m_headers.append({ it.key, it.value });

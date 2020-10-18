@@ -10,6 +10,14 @@ utmp_gid=5
 window_uid=13
 window_gid=13
 
+CP="cp"
+
+# cp on macOS does not support the -d option.
+# gcp comes with coreutils, which is already a dependency.
+if [ "$(uname -s)" = "Darwin" ]; then
+	CP=gcp
+fi
+
 die() {
     echo "die: $*"
     exit 1
@@ -25,8 +33,8 @@ fi
 umask 0022
 
 printf "installing base system... "
-cp -R "$SERENITY_ROOT"/Base/* mnt/
-cp -R Root/* mnt/
+$CP -PdR "$SERENITY_ROOT"/Base/* mnt/
+$CP -PdR Root/* mnt/
 # If umask was 027 or similar when the repo was cloned,
 # file permissions in Base/ are too restrictive. Restore
 # the permissions needed in the image.
@@ -149,6 +157,13 @@ echo "done"
 printf "installing shortcuts... "
 ln -s Shell mnt/bin/sh
 ln -s test mnt/bin/[
+echo "done"
+
+printf "installing 'checksum' variants... "
+ln -s checksum mnt/bin/md5sum
+ln -s checksum mnt/bin/sha1sum
+ln -s checksum mnt/bin/sha256sum
+ln -s checksum mnt/bin/sha512sum
 echo "done"
 
 # Run local sync script, if it exists

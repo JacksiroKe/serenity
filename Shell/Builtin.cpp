@@ -34,7 +34,8 @@
 #include <unistd.h>
 
 extern char** environ;
-extern RefPtr<Line::Editor> editor;
+
+namespace Shell {
 
 int Shell::builtin_alias(int argc, const char** argv)
 {
@@ -418,8 +419,8 @@ int Shell::builtin_disown(int argc, const char** argv)
 
 int Shell::builtin_history(int, const char**)
 {
-    for (size_t i = 0; i < editor->history().size(); ++i) {
-        printf("%6zu  %s\n", i, editor->history()[i].characters());
+    for (size_t i = 0; i < m_editor->history().size(); ++i) {
+        printf("%6zu  %s\n", i, m_editor->history()[i].characters());
     }
     return 0;
 }
@@ -806,4 +807,6 @@ bool Shell::has_builtin(const StringView& name) const
 
 #undef __ENUMERATE_SHELL_BUILTIN
     return false;
+}
+
 }

@@ -29,8 +29,8 @@
 #include "SharedBufferRegion.h"
 #include "SimpleRegion.h"
 #include "SoftCPU.h"
+#include <AK/Format.h>
 #include <AK/LexicalPath.h>
-#include <AK/LogStream.h>
 #include <Kernel/API/Syscall.h>
 #include <LibX86/ELFSymbolProvider.h>
 #include <fcntl.h>
@@ -43,6 +43,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -170,7 +171,7 @@ int Emulator::exec()
         auto insn = X86::Instruction::from_stream(m_cpu, true, true);
 
         if (trace)
-            out() << (const void*)m_cpu.base_eip() << "  \033[33;1m" << insn.to_string(m_cpu.base_eip(), &symbol_provider) << "\033[0m";
+            outln("{:p}  \033[33;1m{}\033[0m", m_cpu.base_eip(), insn.to_string(m_cpu.base_eip(), &symbol_provider));
 
         (m_cpu.*insn.handler())(insn);
 
@@ -216,12 +217,11 @@ void Emulator::dump_backtrace(const Vector<FlatPtr>& backtrace)
         u32 offset = 0;
         String symbol = m_elf->symbolicate(address, &offset);
         auto source_position = m_debug_info->get_source_position(address);
-        report("==%d==    %#08x  %s", getpid(), address, symbol.characters());
+        new_warn("=={}==    {:p}  {}", getpid(), address, symbol);
         if (source_position.has_value())
-            report(" (\033[34;1m%s\033[0m:%zu)", LexicalPath(source_position.value().file_path).basename().characters(), source_position.value().line_number);
+            warnln(" (\033[34;1m{}\033[0m:{})", LexicalPath(source_position.value().file_path).basename(), source_position.value().line_number);
         else
-            report(" +%#x", offset);
-        report("\n");
+            warnln(" +{:x}", offset);
     }
 }
 
@@ -233,7 +233,7 @@ void Emulator::dump_backtrace()
 u32 Emulator::virt_syscall(u32 function, u32 arg1, u32 arg2, u32 arg3)
 {
 #ifdef DEBUG_SPAM
-    dbgprintf("Syscall: %s (%x)\n", Syscall::to_string((Syscall::Function)function), function);
+    dbgln("Syscall: {} ({:x})", Syscall::to_string((Syscall::Function)function), function);
 #endif
     switch (function) {
     case SC_chdir:
@@ -292,6 +292,8 @@ u32 Emulator::virt_syscall(u32 function, u32 arg1, u32 arg2, u32 arg3)
         return virt$gettid();
     case SC_getpid:
         return virt$getpid();
+    case SC_getsid:
+        return virt$getsid(arg1);
     case SC_pledge:
         return virt$pledge(arg1);
     case SC_unveil:
@@ -354,8 +356,10 @@ u32 Emulator::virt_syscall(u32 function, u32 arg1, u32 arg2, u32 arg3)
         return virt$listen(arg1, arg2);
     case SC_select:
         return virt$select(arg1);
-    case SC_recvfrom:
-        return virt$recvfrom(arg1);
+    case SC_recvmsg:
+        return virt$recvmsg(arg1, arg2, arg3);
+    case SC_sendmsg:
+        return virt$sendmsg(arg1, arg2, arg3);
     case SC_kill:
         return virt$kill(arg1, arg2);
     case SC_set_mmap_name:
@@ -374,7 +378,7 @@ u32 Emulator::virt_syscall(u32 function, u32 arg1, u32 arg2, u32 arg3)
     case SC_fork:
         return virt$fork();
     default:
-        report("\n==%d==  \033[31;1mUnimplemented syscall: %s\033[0m, %p\n", getpid(), Syscall::to_string((Syscall::Function)function));
+        warnln("\n=={}==  \033[31;1mUnimplemented syscall: {}\033[0m, {:p}", getpid(), Syscall::to_string((Syscall::Function)function), function);
         dump_backtrace();
         TODO();
     }
@@ -487,10 +491,10 @@ int Emulator::virt$setsockopt(FlatPtr params_addr)
     Syscall::SC_setsockopt_params params;
     mmu().copy_from_vm(&params, params_addr, sizeof(params));
 
-    if (params.option == SO_RCVTIMEO) {
+    if (params.option == SO_RCVTIMEO || params.option == SO_TIMESTAMP) {
         auto host_value_buffer = ByteBuffer::create_zeroed(params.value_size);
         mmu().copy_from_vm(host_value_buffer.data(), (FlatPtr)params.value, params.value_size);
-        int rc = setsockopt(params.sockfd, params.level, SO_RCVTIMEO, host_value_buffer.data(), host_value_buffer.size());
+        int rc = setsockopt(params.sockfd, params.level, params.option, host_value_buffer.data(), host_value_buffer.size());
         if (rc < 0)
             return -errno;
         return rc;
@@ -591,32 +595,72 @@ int Emulator::virt$socket(int domain, int type, int protocol)
     return syscall(SC_socket, domain, type, protocol);
 }
 
-int Emulator::virt$recvfrom(FlatPtr params_addr)
+int Emulator::virt$recvmsg(int sockfd, FlatPtr msg_addr, int flags)
 {
-    Syscall::SC_recvfrom_params params;
-    mmu().copy_from_vm(&params, params_addr, sizeof(params));
-    auto buffer = ByteBuffer::create_uninitialized(params.buffer.size);
+    msghdr mmu_msg;
+    mmu().copy_from_vm(&mmu_msg, msg_addr, sizeof(mmu_msg));
 
-    sockaddr_un address;
-    if (params.addr)
-        mmu().copy_from_vm(&address, (FlatPtr)params.addr, sizeof(address));
+    Vector<iovec, 1> mmu_iovs;
+    mmu_iovs.resize(mmu_msg.msg_iovlen);
+    mmu().copy_from_vm(mmu_iovs.data(), (FlatPtr)mmu_msg.msg_iov, mmu_msg.msg_iovlen * sizeof(iovec));
+    Vector<ByteBuffer, 1> buffers;
+    Vector<iovec, 1> iovs;
+    for (const auto& iov : mmu_iovs) {
+        buffers.append(ByteBuffer::create_uninitialized(iov.iov_len));
+        iovs.append({ buffers.last().data(), buffers.last().size() });
+    }
 
-    socklen_t address_length = 0;
-    if (params.addr_length)
-        mmu().copy_from_vm(&address_length, (FlatPtr)address_length, sizeof(address_length));
+    ByteBuffer control_buffer;
+    if (mmu_msg.msg_control)
+        control_buffer = ByteBuffer::create_uninitialized(mmu_msg.msg_controllen);
 
-    int rc = recvfrom(params.sockfd, buffer.data(), buffer.size(), params.flags, params.addr ? (struct sockaddr*)&address : nullptr, params.addr_length ? &address_length : nullptr);
+    sockaddr_storage addr;
+    msghdr msg = { &addr, sizeof(addr), iovs.data(), (int)iovs.size(), mmu_msg.msg_control ? control_buffer.data() : nullptr, mmu_msg.msg_controllen, mmu_msg.msg_flags };
+    int rc = recvmsg(sockfd, &msg, flags);
     if (rc < 0)
         return -errno;
 
-    mmu().copy_to_vm((FlatPtr)params.buffer.data, buffer.data(), buffer.size());
+    for (size_t i = 0; i < buffers.size(); ++i)
+        mmu().copy_to_vm((FlatPtr)mmu_iovs[i].iov_base, buffers[i].data(), mmu_iovs[i].iov_len);
 
-    if (params.addr)
-        mmu().copy_to_vm((FlatPtr)params.addr, &address, address_length);
-    if (params.addr_length)
-        mmu().copy_to_vm((FlatPtr)params.addr_length, &address_length, sizeof(address_length));
-
+    if (mmu_msg.msg_name)
+        mmu().copy_to_vm((FlatPtr)mmu_msg.msg_name, &addr, min(sizeof(addr), (size_t)mmu_msg.msg_namelen));
+    if (mmu_msg.msg_control)
+        mmu().copy_to_vm((FlatPtr)mmu_msg.msg_control, control_buffer.data(), min(mmu_msg.msg_controllen, msg.msg_controllen));
+    mmu_msg.msg_namelen = msg.msg_namelen;
+    mmu_msg.msg_controllen = msg.msg_controllen;
+    mmu_msg.msg_flags = msg.msg_flags;
+    mmu().copy_to_vm(msg_addr, &mmu_msg, sizeof(mmu_msg));
     return rc;
+}
+
+int Emulator::virt$sendmsg(int sockfd, FlatPtr msg_addr, int flags)
+{
+    msghdr mmu_msg;
+    mmu().copy_from_vm(&mmu_msg, msg_addr, sizeof(mmu_msg));
+
+    Vector<iovec, 1> iovs;
+    iovs.resize(mmu_msg.msg_iovlen);
+    mmu().copy_from_vm(iovs.data(), (FlatPtr)mmu_msg.msg_iov, mmu_msg.msg_iovlen * sizeof(iovec));
+    Vector<ByteBuffer, 1> buffers;
+    for (auto& iov : iovs) {
+        buffers.append(mmu().copy_buffer_from_vm((FlatPtr)iov.iov_base, iov.iov_len));
+        iov = { buffers.last().data(), buffers.last().size() };
+    }
+
+    ByteBuffer control_buffer;
+    if (mmu_msg.msg_control)
+        control_buffer = ByteBuffer::create_uninitialized(mmu_msg.msg_controllen);
+
+    sockaddr_storage address;
+    socklen_t address_length = 0;
+    if (mmu_msg.msg_name) {
+        address_length = min(sizeof(address), (size_t)mmu_msg.msg_namelen);
+        mmu().copy_from_vm(&address, (FlatPtr)mmu_msg.msg_name, address_length);
+    }
+
+    msghdr msg = { mmu_msg.msg_name ? &address : nullptr, address_length, iovs.data(), (int)iovs.size(), mmu_msg.msg_control ? control_buffer.data() : nullptr, mmu_msg.msg_controllen, mmu_msg.msg_flags };
+    return sendmsg(sockfd, &msg, flags);
 }
 
 int Emulator::virt$select(FlatPtr params_addr)
@@ -852,7 +896,7 @@ u32 Emulator::virt$read(int fd, FlatPtr buffer, ssize_t size)
 
 void Emulator::virt$exit(int status)
 {
-    report("\n==%d==  \033[33;1mSyscall: exit(%d)\033[0m, shutting down!\n", getpid(), status);
+    warnln("\n=={}==  \033[33;1mSyscall: exit({})\033[0m, shutting down!", getpid(), status);
     m_exit_status = status;
     m_shutdown = true;
 }
@@ -905,7 +949,7 @@ int Emulator::virt$ioctl(int fd, unsigned request, FlatPtr arg)
         mmu().copy_from_vm(&termios, arg, sizeof(termios));
         return syscall(SC_ioctl, fd, request, &termios);
     }
-    dbg() << "Unsupported ioctl: " << request;
+    dbgln("Unsupported ioctl: {}", request);
     dump_backtrace();
     TODO();
 }
@@ -930,7 +974,7 @@ int Emulator::virt$execve(FlatPtr params_addr)
     auto copy_string_list = [this](auto& output_vector, auto& string_list) {
         for (size_t i = 0; i < string_list.length; ++i) {
             Syscall::StringArgument string;
-            mmu().copy_from_vm(&string, (FlatPtr)&string_list.strings.ptr()[i], sizeof(string));
+            mmu().copy_from_vm(&string, (FlatPtr)&string_list.strings[i], sizeof(string));
             output_vector.append(String::copy(mmu().copy_buffer_from_vm((FlatPtr)string.characters, string.length)));
         }
     };
@@ -938,11 +982,10 @@ int Emulator::virt$execve(FlatPtr params_addr)
     copy_string_list(arguments, params.arguments);
     copy_string_list(environment, params.environment);
 
-    report("\n");
-    report("==%d==  \033[33;1mSyscall:\033[0m execve\n", getpid());
-    report("==%d==  @ %s\n", getpid(), path.characters());
+    warnln("\n=={}==  \033[33;1mSyscall:\033[0m execve", getpid());
+    warnln("=={}==  @ {}", getpid(), path);
     for (auto& argument : arguments)
-        report("==%d==    - %s\n", getpid(), argument.characters());
+        warnln("=={}==    - {}", getpid(), argument);
 
     Vector<char*> argv;
     Vector<char*> envp;
@@ -1027,7 +1070,7 @@ void Emulator::register_signal_handlers()
 int Emulator::virt$sigaction(int signum, FlatPtr act, FlatPtr oldact)
 {
     if (signum == SIGKILL) {
-        dbg() << "Attempted to sigaction() with SIGKILL";
+        dbgln("Attempted to sigaction() with SIGKILL");
         return -EINVAL;
     }
 
@@ -1155,7 +1198,7 @@ void Emulator::dispatch_one_pending_signal()
         auto action = default_signal_action(signum);
         if (action == DefaultSignalAction::Ignore)
             return;
-        report("\n==%d== Got signal %d (%s), no handler registered\n", getpid(), signum, strsignal(signum));
+        warnln("\n=={}== Got signal {} ({}), no handler registered", getpid(), signum, strsignal(signum));
         m_shutdown = true;
         return;
     }
@@ -1165,7 +1208,7 @@ void Emulator::dispatch_one_pending_signal()
         return;
     }
 
-    report("\n==%d== Got signal %d (%s), handler at %p\n", getpid(), signum, strsignal(signum), handler.handler);
+    warnln("\n=={}== Got signal {} ({}), handler at {:p}", getpid(), signum, strsignal(signum), handler.handler);
 
     auto old_esp = m_cpu.esp();
 
@@ -1195,14 +1238,6 @@ void Emulator::dispatch_one_pending_signal()
     m_cpu.set_eip(m_signal_trampoline);
 }
 
-void report(const char* format, ...)
-{
-    va_list ap;
-    va_start(ap, format);
-    vfprintf(stderr, format, ap);
-    va_end(ap);
-}
-
 // Make sure the compiler doesn't "optimize away" this function:
 extern void signal_trampoline_dummy(void);
 void signal_trampoline_dummy(void)
@@ -1211,7 +1246,7 @@ void signal_trampoline_dummy(void)
     // then calls the signal handler. We do this because, when interrupting a
     // blocking syscall, that syscall may return some special error code in eax;
     // This error code would likely be overwritten by the signal handler, so it's
-    // neccessary to preserve it here.
+    // necessary to preserve it here.
     asm(
         ".intel_syntax noprefix\n"
         "asm_signal_trampoline:\n"
@@ -1282,6 +1317,11 @@ int Emulator::virt$getcwd(FlatPtr buffer, size_t buffer_size)
     return rc;
 }
 
+int Emulator::virt$getsid(pid_t pid)
+{
+    return syscall(SC_getsid, pid);
+}
+
 int Emulator::virt$access(FlatPtr path, size_t path_length, int type)
 {
     auto host_path = mmu().copy_buffer_from_vm(path, path_length);
@@ -1307,7 +1347,7 @@ int Emulator::virt$waitid(FlatPtr params_addr)
     }
 
     if (params.infop)
-        mmu().copy_to_vm(params.infop, &info, sizeof(info));
+        mmu().copy_to_vm((FlatPtr)params.infop, &info, sizeof(info));
 
     return rc;
 }

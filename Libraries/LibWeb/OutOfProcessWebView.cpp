@@ -27,10 +27,13 @@
 #include "OutOfProcessWebView.h"
 #include "WebContentClient.h"
 #include <AK/SharedBuffer.h>
+#include <LibGUI/MessageBox.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/ScrollBar.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/SystemTheme.h>
+
+REGISTER_WIDGET(Web, OutOfProcessWebView)
 
 namespace Web {
 
@@ -49,6 +52,18 @@ void OutOfProcessWebView::load(const URL& url)
 {
     m_url = url;
     client().post_message(Messages::WebContentServer::LoadURL(url));
+}
+
+void OutOfProcessWebView::load_html(const StringView& html, const URL& url)
+{
+    m_url = url;
+    client().post_message(Messages::WebContentServer::LoadHTML(html, url));
+}
+
+void OutOfProcessWebView::load_empty_document()
+{
+    m_url = {};
+    client().post_message(Messages::WebContentServer::LoadHTML("", {}));
 }
 
 void OutOfProcessWebView::paint_event(GUI::PaintEvent& event)
@@ -96,6 +111,13 @@ void OutOfProcessWebView::mouseup_event(GUI::MouseEvent& event)
 void OutOfProcessWebView::mousemove_event(GUI::MouseEvent& event)
 {
     client().post_message(Messages::WebContentServer::MouseMove(to_content_position(event.position()), event.button(), event.buttons(), event.modifiers()));
+}
+
+void OutOfProcessWebView::theme_change_event(GUI::ThemeChangeEvent& event)
+{
+    GUI::ScrollableWidget::theme_change_event(event);
+    client().post_message(Messages::WebContentServer::UpdateSystemTheme(Gfx::current_system_theme_buffer_id()));
+    request_repaint();
 }
 
 void OutOfProcessWebView::notify_server_did_paint(Badge<WebContentClient>, i32 shbuf_id)
@@ -177,6 +199,11 @@ void OutOfProcessWebView::notify_server_did_request_link_context_menu(Badge<WebC
 {
     if (on_link_context_menu_request)
         on_link_context_menu_request(url, screen_relative_rect().location().translated(to_widget_position(content_position)));
+}
+
+void OutOfProcessWebView::notify_server_did_request_alert(Badge<WebContentClient>, const String& message)
+{
+    GUI::MessageBox::show(window(), message, "Alert", GUI::MessageBox::Type::Information);
 }
 
 void OutOfProcessWebView::did_scroll()

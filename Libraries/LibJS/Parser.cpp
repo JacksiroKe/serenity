@@ -28,6 +28,7 @@
 #include "Parser.h"
 #include <AK/ScopeGuard.h>
 #include <AK/StdLibExtras.h>
+#include <AK/TemporaryChange.h>
 
 namespace JS {
 
@@ -165,8 +166,11 @@ private:
         { TokenType::ShiftRightEquals, 3 },
         { TokenType::UnsignedShiftRightEquals, 3 },
         { TokenType::AmpersandEquals, 3 },
-        { TokenType::PipeEquals, 3 },
         { TokenType::CaretEquals, 3 },
+        { TokenType::PipeEquals, 3 },
+        { TokenType::DoubleAmpersandEquals, 3 },
+        { TokenType::DoublePipeEquals, 3 },
+        { TokenType::DoubleQuestionMarkEquals, 3 },
 
         { TokenType::Yield, 2 },
 
@@ -390,10 +394,18 @@ RefPtr<FunctionExpression> Parser::try_parse_arrow_function_expression(bool expe
     if (function_length == -1)
         function_length = parameters.size();
 
-    auto function_body_result = [this]() -> RefPtr<BlockStatement> {
+    auto old_labels_in_scope = move(m_parser_state.m_labels_in_scope);
+    ScopeGuard guard([&]() {
+        m_parser_state.m_labels_in_scope = move(old_labels_in_scope);
+    });
+
+    bool is_strict = false;
+
+    auto function_body_result = [&]() -> RefPtr<BlockStatement> {
+        TemporaryChange change(m_parser_state.m_in_function_context, true);
         if (match(TokenType::CurlyOpen)) {
             // Parse a function body with statements
-            return parse_block_statement();
+            return parse_block_statement(is_strict);
         }
         if (match_expression()) {
             // Parse a function body which returns a single expression
@@ -414,7 +426,7 @@ RefPtr<FunctionExpression> Parser::try_parse_arrow_function_expression(bool expe
     if (!function_body_result.is_null()) {
         state_rollback_guard.disarm();
         auto body = function_body_result.release_nonnull();
-        return create_ast_node<FunctionExpression>("", move(body), move(parameters), function_length, m_parser_state.m_var_scopes.take_last(), true);
+        return create_ast_node<FunctionExpression>("", move(body), move(parameters), function_length, m_parser_state.m_var_scopes.take_last(), is_strict, true);
     }
 
     return nullptr;
@@ -434,7 +446,9 @@ RefPtr<Statement> Parser::try_parse_labelled_statement()
 
     if (!match_statement())
         return {};
+    m_parser_state.m_labels_in_scope.set(identifier);
     auto statement = parse_statement();
+    m_parser_state.m_labels_in_scope.remove(identifier);
 
     statement->set_label(identifier);
     state_rollback_guard.disarm();
@@ -562,9 +576,9 @@ NonnullRefPtr<ClassExpression> Parser::parse_class_expression(bool expect_class_
             constructor_body->append(create_ast_node<ExpressionStatement>(move(super_call)));
             constructor_body->add_variables(m_parser_state.m_var_scopes.last());
 
-            constructor = create_ast_node<FunctionExpression>(class_name, move(constructor_body), Vector { FunctionNode::Parameter { "args", nullptr, true } }, 0, NonnullRefPtrVector<VariableDeclaration>());
+            constructor = create_ast_node<FunctionExpression>(class_name, move(constructor_body), Vector { FunctionNode::Parameter { "args", nullptr, true } }, 0, NonnullRefPtrVector<VariableDeclaration>(), true);
         } else {
-            constructor = create_ast_node<FunctionExpression>(class_name, move(constructor_body), Vector<FunctionNode::Parameter> {}, 0, NonnullRefPtrVector<VariableDeclaration>());
+            constructor = create_ast_node<FunctionExpression>(class_name, move(constructor_body), Vector<FunctionNode::Parameter> {}, 0, NonnullRefPtrVector<VariableDeclaration>(), true);
         }
     }
 
@@ -653,8 +667,10 @@ NonnullRefPtr<Expression> Parser::parse_unary_prefixed_expression()
         auto rhs_start_line = m_parser_state.m_current_token.line_number();
         auto rhs_start_column = m_parser_state.m_current_token.line_column();
         auto rhs = parse_expression(precedence, associativity);
+        // FIXME: Apparently for functions this should also not be enforced on a parser level,
+        // other engines throw ReferenceError for ++foo()
         if (!rhs->is_identifier() && !rhs->is_member_expression())
-            syntax_error(String::format("Right-hand side of prefix increment operator must be identifier or member expression, got %s", rhs->class_name()), rhs_start_line, rhs_start_column);
+            syntax_error(String::formatted("Right-hand side of prefix increment operator must be identifier or member expression, got {}", rhs->class_name()), rhs_start_line, rhs_start_column);
         return create_ast_node<UpdateExpression>(UpdateOp::Increment, move(rhs), true);
     }
     case TokenType::MinusMinus: {
@@ -662,8 +678,10 @@ NonnullRefPtr<Expression> Parser::parse_unary_prefixed_expression()
         auto rhs_start_line = m_parser_state.m_current_token.line_number();
         auto rhs_start_column = m_parser_state.m_current_token.line_column();
         auto rhs = parse_expression(precedence, associativity);
+        // FIXME: Apparently for functions this should also not be enforced on a parser level,
+        // other engines throw ReferenceError for --foo()
         if (!rhs->is_identifier() && !rhs->is_member_expression())
-            syntax_error(String::format("Right-hand side of prefix decrement operator must be identifier or member expression, got %s", rhs->class_name()), rhs_start_line, rhs_start_column);
+            syntax_error(String::formatted("Right-hand side of prefix decrement operator must be identifier or member expression, got {}", rhs->class_name()), rhs_start_line, rhs_start_column);
         return create_ast_node<UpdateExpression>(UpdateOp::Decrement, move(rhs), true);
     }
     case TokenType::ExclamationMark:
@@ -850,7 +868,7 @@ NonnullRefPtr<StringLiteral> Parser::parse_string_literal(Token token)
         String message;
         if (status == Token::StringValueStatus::MalformedHexEscape || status == Token::StringValueStatus::MalformedUnicodeEscape) {
             auto type = status == Token::StringValueStatus::MalformedUnicodeEscape ? "unicode" : "hexadecimal";
-            message = String::format("Malformed %s escape sequence", type);
+            message = String::formatted("Malformed {} escape sequence", type);
         } else if (status == Token::StringValueStatus::UnicodeEscapeOverflow) {
             message = "Unicode code_point must not be greater than 0x10ffff in escape sequence";
         }
@@ -968,38 +986,32 @@ NonnullRefPtr<Expression> Parser::parse_secondary_expression(NonnullRefPtr<Expre
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::Addition, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::PlusEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::AdditionAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::AdditionAssignment, move(lhs), min_precedence, associativity);
     case TokenType::Minus:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::Subtraction, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::MinusEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::SubtractionAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::SubtractionAssignment, move(lhs), min_precedence, associativity);
     case TokenType::Asterisk:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::Multiplication, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::AsteriskEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::MultiplicationAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::MultiplicationAssignment, move(lhs), min_precedence, associativity);
     case TokenType::Slash:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::Division, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::SlashEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::DivisionAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::DivisionAssignment, move(lhs), min_precedence, associativity);
     case TokenType::Percent:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::Modulo, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::PercentEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::ModuloAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::ModuloAssignment, move(lhs), min_precedence, associativity);
     case TokenType::DoubleAsterisk:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::Exponentiation, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::DoubleAsteriskEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::ExponentiationAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::ExponentiationAssignment, move(lhs), min_precedence, associativity);
     case TokenType::GreaterThan:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::GreaterThan, move(lhs), parse_expression(min_precedence, associativity));
@@ -1034,56 +1046,36 @@ NonnullRefPtr<Expression> Parser::parse_secondary_expression(NonnullRefPtr<Expre
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::BitwiseAnd, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::AmpersandEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::BitwiseAndAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::BitwiseAndAssignment, move(lhs), min_precedence, associativity);
     case TokenType::Pipe:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::BitwiseOr, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::PipeEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::BitwiseOrAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::BitwiseOrAssignment, move(lhs), min_precedence, associativity);
     case TokenType::Caret:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::BitwiseXor, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::CaretEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::BitwiseXorAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::BitwiseXorAssignment, move(lhs), min_precedence, associativity);
     case TokenType::ShiftLeft:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::LeftShift, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::ShiftLeftEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::LeftShiftAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::LeftShiftAssignment, move(lhs), min_precedence, associativity);
     case TokenType::ShiftRight:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::RightShift, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::ShiftRightEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::RightShiftAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::RightShiftAssignment, move(lhs), min_precedence, associativity);
     case TokenType::UnsignedShiftRight:
         consume();
         return create_ast_node<BinaryExpression>(BinaryOp::UnsignedRightShift, move(lhs), parse_expression(min_precedence, associativity));
     case TokenType::UnsignedShiftRightEquals:
-        consume();
-        return create_ast_node<AssignmentExpression>(AssignmentOp::UnsignedRightShiftAssignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::UnsignedRightShiftAssignment, move(lhs), min_precedence, associativity);
     case TokenType::ParenOpen:
         return parse_call_expression(move(lhs));
     case TokenType::Equals:
-        consume();
-        if (!lhs->is_identifier() && !lhs->is_member_expression() && !lhs->is_call_expression()) {
-            syntax_error("Invalid left-hand side in assignment");
-            return create_ast_node<ErrorExpression>();
-        }
-        if (m_parser_state.m_strict_mode && lhs->is_identifier()) {
-            auto name = static_cast<const Identifier&>(*lhs).string();
-            if (name == "eval" || name == "arguments") {
-                syntax_error(
-                    String::format("'%s' cannot be assigned to in strict mode code", name.characters()),
-                    m_parser_state.m_current_token.line_number(),
-                    m_parser_state.m_current_token.line_column());
-            }
-        }
-        return create_ast_node<AssignmentExpression>(AssignmentOp::Assignment, move(lhs), parse_expression(min_precedence, associativity));
+        return parse_assignment_expression(AssignmentOp::Assignment, move(lhs), min_precedence, associativity);
     case TokenType::Period:
         consume();
         if (!match_identifier_name())
@@ -1096,24 +1088,34 @@ NonnullRefPtr<Expression> Parser::parse_secondary_expression(NonnullRefPtr<Expre
         return expression;
     }
     case TokenType::PlusPlus:
+        // FIXME: Apparently for functions this should also not be enforced on a parser level,
+        // other engines throw ReferenceError for foo()++
         if (!lhs->is_identifier() && !lhs->is_member_expression())
-            syntax_error(String::format("Left-hand side of postfix increment operator must be identifier or member expression, got %s", lhs->class_name()));
+            syntax_error(String::formatted("Left-hand side of postfix increment operator must be identifier or member expression, got {}", lhs->class_name()));
         consume();
         return create_ast_node<UpdateExpression>(UpdateOp::Increment, move(lhs));
     case TokenType::MinusMinus:
+        // FIXME: Apparently for functions this should also not be enforced on a parser level,
+        // other engines throw ReferenceError for foo()--
         if (!lhs->is_identifier() && !lhs->is_member_expression())
-            syntax_error(String::format("Left-hand side of postfix increment operator must be identifier or member expression, got %s", lhs->class_name()));
+            syntax_error(String::formatted("Left-hand side of postfix increment operator must be identifier or member expression, got {}", lhs->class_name()));
         consume();
         return create_ast_node<UpdateExpression>(UpdateOp::Decrement, move(lhs));
     case TokenType::DoubleAmpersand:
         consume();
         return create_ast_node<LogicalExpression>(LogicalOp::And, move(lhs), parse_expression(min_precedence, associativity));
+    case TokenType::DoubleAmpersandEquals:
+        return parse_assignment_expression(AssignmentOp::AndAssignment, move(lhs), min_precedence, associativity);
     case TokenType::DoublePipe:
         consume();
         return create_ast_node<LogicalExpression>(LogicalOp::Or, move(lhs), parse_expression(min_precedence, associativity));
+    case TokenType::DoublePipeEquals:
+        return parse_assignment_expression(AssignmentOp::OrAssignment, move(lhs), min_precedence, associativity);
     case TokenType::DoubleQuestionMark:
         consume();
         return create_ast_node<LogicalExpression>(LogicalOp::NullishCoalescing, move(lhs), parse_expression(min_precedence, associativity));
+    case TokenType::DoubleQuestionMarkEquals:
+        return parse_assignment_expression(AssignmentOp::NullishAssignment, move(lhs), min_precedence, associativity);
     case TokenType::QuestionMark:
         return parse_conditional_expression(move(lhs));
     default:
@@ -1121,6 +1123,37 @@ NonnullRefPtr<Expression> Parser::parse_secondary_expression(NonnullRefPtr<Expre
         consume();
         return create_ast_node<ErrorExpression>();
     }
+}
+
+NonnullRefPtr<AssignmentExpression> Parser::parse_assignment_expression(AssignmentOp assignment_op, NonnullRefPtr<Expression> lhs, int min_precedence, Associativity associativity)
+{
+    ASSERT(match(TokenType::Equals)
+        || match(TokenType::PlusEquals)
+        || match(TokenType::MinusEquals)
+        || match(TokenType::AsteriskEquals)
+        || match(TokenType::SlashEquals)
+        || match(TokenType::PercentEquals)
+        || match(TokenType::DoubleAsteriskEquals)
+        || match(TokenType::AmpersandEquals)
+        || match(TokenType::PipeEquals)
+        || match(TokenType::CaretEquals)
+        || match(TokenType::ShiftLeftEquals)
+        || match(TokenType::ShiftRightEquals)
+        || match(TokenType::UnsignedShiftRightEquals)
+        || match(TokenType::DoubleAmpersandEquals)
+        || match(TokenType::DoublePipeEquals)
+        || match(TokenType::DoubleQuestionMarkEquals));
+    consume();
+    if (!lhs->is_identifier() && !lhs->is_member_expression() && !lhs->is_call_expression()) {
+        syntax_error("Invalid left-hand side in assignment");
+    } else if (m_parser_state.m_strict_mode && lhs->is_identifier()) {
+        auto name = static_cast<const Identifier&>(*lhs).string();
+        if (name == "eval" || name == "arguments")
+            syntax_error(String::formatted("'{}' cannot be assigned to in strict mode code", name));
+    } else if (m_parser_state.m_strict_mode && lhs->is_call_expression()) {
+        syntax_error("Cannot assign to function call");
+    }
+    return create_ast_node<AssignmentExpression>(assignment_op, move(lhs), parse_expression(min_precedence, associativity));
 }
 
 NonnullRefPtr<CallExpression> Parser::parse_call_expression(NonnullRefPtr<Expression> lhs)
@@ -1178,6 +1211,9 @@ NonnullRefPtr<NewExpression> Parser::parse_new_expression()
 
 NonnullRefPtr<ReturnStatement> Parser::parse_return_statement()
 {
+    if (!m_parser_state.m_in_function_context)
+        syntax_error("'return' not allowed outside of a function");
+
     consume(TokenType::Return);
 
     // Automatic semicolon insertion: terminate statement when return is followed by newline
@@ -1196,6 +1232,12 @@ NonnullRefPtr<ReturnStatement> Parser::parse_return_statement()
 
 NonnullRefPtr<BlockStatement> Parser::parse_block_statement()
 {
+    bool dummy = false;
+    return parse_block_statement(dummy);
+}
+
+NonnullRefPtr<BlockStatement> Parser::parse_block_statement(bool& is_strict)
+{
     ScopePusher scope(*this, ScopePusher::Let);
     auto block = create_ast_node<BlockStatement>();
     consume(TokenType::CurlyOpen);
@@ -1204,7 +1246,7 @@ NonnullRefPtr<BlockStatement> Parser::parse_block_statement()
     bool initial_strict_mode_state = m_parser_state.m_strict_mode;
     if (initial_strict_mode_state) {
         m_parser_state.m_use_strict_directive = UseStrictDirectiveState::None;
-        block->set_strict_mode();
+        is_strict = true;
     } else {
         m_parser_state.m_use_strict_directive = UseStrictDirectiveState::Looking;
     }
@@ -1217,7 +1259,7 @@ NonnullRefPtr<BlockStatement> Parser::parse_block_statement()
 
             if (first && !initial_strict_mode_state) {
                 if (m_parser_state.m_use_strict_directive == UseStrictDirectiveState::Found) {
-                    block->set_strict_mode();
+                    is_strict = true;
                     m_parser_state.m_strict_mode = true;
                 }
                 m_parser_state.m_use_strict_directive = UseStrictDirectiveState::None;
@@ -1284,10 +1326,17 @@ NonnullRefPtr<FunctionNodeType> Parser::parse_function_node(bool check_for_funct
     if (function_length == -1)
         function_length = parameters.size();
 
-    auto body = parse_block_statement();
+    TemporaryChange change(m_parser_state.m_in_function_context, true);
+    auto old_labels_in_scope = move(m_parser_state.m_labels_in_scope);
+    ScopeGuard guard([&]() {
+        m_parser_state.m_labels_in_scope = move(old_labels_in_scope);
+    });
+
+    bool is_strict = false;
+    auto body = parse_block_statement(is_strict);
     body->add_variables(m_parser_state.m_var_scopes.last());
     body->add_functions(m_parser_state.m_function_scopes.last());
-    return create_ast_node<FunctionNodeType>(name, move(body), move(parameters), function_length, NonnullRefPtrVector<VariableDeclaration>());
+    return create_ast_node<FunctionNodeType>(name, move(body), move(parameters), function_length, NonnullRefPtrVector<VariableDeclaration>(), is_strict);
 }
 
 NonnullRefPtr<VariableDeclaration> Parser::parse_variable_declaration(bool with_semicolon)
@@ -1358,24 +1407,37 @@ NonnullRefPtr<BreakStatement> Parser::parse_break_statement()
     FlyString target_label;
     if (match(TokenType::Semicolon)) {
         consume();
-        return create_ast_node<BreakStatement>(target_label);
+    } else {
+        if (match(TokenType::Identifier) && !m_parser_state.m_current_token.trivia().contains('\n')) {
+            target_label = consume().value();
+            if (!m_parser_state.m_labels_in_scope.contains(target_label))
+                syntax_error(String::formatted("Label '{}' not found", target_label));
+        }
+        consume_or_insert_semicolon();
     }
-    if (match(TokenType::Identifier) && !m_parser_state.m_current_token.trivia().contains('\n'))
-        target_label = consume().value();
-    consume_or_insert_semicolon();
+
+    if (target_label.is_null() && !m_parser_state.m_in_break_context)
+        syntax_error("Unlabeled 'break' not allowed outside of a loop or switch statement");
+
     return create_ast_node<BreakStatement>(target_label);
 }
 
 NonnullRefPtr<ContinueStatement> Parser::parse_continue_statement()
 {
+    if (!m_parser_state.m_in_continue_context)
+        syntax_error("'continue' not allow outside of a loop");
+
     consume(TokenType::Continue);
     FlyString target_label;
     if (match(TokenType::Semicolon)) {
         consume();
         return create_ast_node<ContinueStatement>(target_label);
     }
-    if (match(TokenType::Identifier) && !m_parser_state.m_current_token.trivia().contains('\n'))
+    if (match(TokenType::Identifier) && !m_parser_state.m_current_token.trivia().contains('\n')) {
         target_label = consume().value();
+        if (!m_parser_state.m_labels_in_scope.contains(target_label))
+            syntax_error(String::formatted("Label '{}' not found", target_label));
+    }
     consume_or_insert_semicolon();
     return create_ast_node<ContinueStatement>(target_label);
 }
@@ -1412,7 +1474,11 @@ NonnullRefPtr<DoWhileStatement> Parser::parse_do_while_statement()
 {
     consume(TokenType::Do);
 
-    auto body = parse_statement();
+    auto body = [&]() -> NonnullRefPtr<Statement> {
+        TemporaryChange break_change(m_parser_state.m_in_break_context, true);
+        TemporaryChange continue_change(m_parser_state.m_in_continue_context, true);
+        return parse_statement();
+    }();
 
     consume(TokenType::While);
     consume(TokenType::ParenOpen);
@@ -1434,6 +1500,8 @@ NonnullRefPtr<WhileStatement> Parser::parse_while_statement()
 
     consume(TokenType::ParenClose);
 
+    TemporaryChange break_change(m_parser_state.m_in_break_context, true);
+    TemporaryChange continue_change(m_parser_state.m_in_continue_context, true);
     auto body = parse_statement();
 
     return create_ast_node<WhileStatement>(move(test), move(body));
@@ -1470,6 +1538,7 @@ NonnullRefPtr<SwitchCase> Parser::parse_switch_case()
     consume(TokenType::Colon);
 
     NonnullRefPtrVector<Statement> consequent;
+    TemporaryChange break_change(m_parser_state.m_in_break_context, true);
     while (match_statement())
         consequent.append(parse_statement());
 
@@ -1549,6 +1618,8 @@ NonnullRefPtr<Statement> Parser::parse_for_statement()
 
     consume(TokenType::ParenClose);
 
+    TemporaryChange break_change(m_parser_state.m_in_break_context, true);
+    TemporaryChange continue_change(m_parser_state.m_in_continue_context, true);
     auto body = parse_statement();
 
     if (in_scope) {
@@ -1574,6 +1645,9 @@ NonnullRefPtr<Statement> Parser::parse_for_in_of_statement(NonnullRefPtr<ASTNode
     auto in_or_of = consume();
     auto rhs = parse_expression(0);
     consume(TokenType::ParenClose);
+
+    TemporaryChange break_change(m_parser_state.m_in_break_context, true);
+    TemporaryChange continue_change(m_parser_state.m_in_continue_context, true);
     auto body = parse_statement();
     if (in_or_of.type() == TokenType::In)
         return create_ast_node<ForInStatement>(move(lhs), move(rhs), move(body));
@@ -1686,8 +1760,11 @@ bool Parser::match_secondary_expression(Vector<TokenType> forbidden) const
         || type == TokenType::UnsignedShiftRight
         || type == TokenType::UnsignedShiftRightEquals
         || type == TokenType::DoubleAmpersand
+        || type == TokenType::DoubleAmpersandEquals
         || type == TokenType::DoublePipe
-        || type == TokenType::DoubleQuestionMark;
+        || type == TokenType::DoublePipeEquals
+        || type == TokenType::DoubleQuestionMark
+        || type == TokenType::DoubleQuestionMarkEquals;
 }
 
 bool Parser::match_statement() const
@@ -1749,7 +1826,7 @@ void Parser::consume_or_insert_semicolon()
         return;
     }
     // Insert semicolon if...
-    // ...token is preceeded by one or more newlines
+    // ...token is preceded by one or more newlines
     if (m_parser_state.m_current_token.trivia().contains('\n'))
         return;
     // ...token is a closing curly brace
@@ -1773,7 +1850,7 @@ Token Parser::consume(TokenType expected_type)
 
 void Parser::expected(const char* what)
 {
-    syntax_error(String::format("Unexpected token %s. Expected %s", m_parser_state.m_current_token.name(), what));
+    syntax_error(String::formatted("Unexpected token {}. Expected {}", m_parser_state.m_current_token.name(), what));
 }
 
 void Parser::syntax_error(const String& message, size_t line, size_t column)

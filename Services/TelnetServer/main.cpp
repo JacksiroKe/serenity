@@ -25,7 +25,6 @@
  */
 
 #include "Client.h"
-#include <AK/BufferStream.h>
 #include <AK/ByteBuffer.h>
 #include <AK/HashMap.h>
 #include <AK/IPv4Address.h>
@@ -127,7 +126,7 @@ int main(int argc, char** argv)
     }
 
     if (!server->listen({}, port)) {
-        perror("listen");
+        warnln("Listening on 0.0.0.0:{} failed", port);
         exit(1);
     }
 

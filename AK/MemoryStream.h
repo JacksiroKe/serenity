@@ -35,12 +35,13 @@ namespace AK {
 
 class InputMemoryStream final : public InputStream {
 public:
-    InputMemoryStream(ReadonlyBytes bytes)
+    explicit InputMemoryStream(ReadonlyBytes bytes)
         : m_bytes(bytes)
     {
     }
 
-    bool eof() const override { return m_offset >= m_bytes.size(); }
+    bool unreliable_eof() const override { return eof(); }
+    bool eof() const { return m_offset >= m_bytes.size(); }
 
     size_t read(Bytes bytes) override
     {
@@ -92,7 +93,6 @@ public:
         return m_bytes[m_offset];
     }
 
-    // LEB128 is a variable-length encoding for integers
     bool read_LEB128_unsigned(size_t& result)
     {
         const auto backup = m_offset;
@@ -100,8 +100,6 @@ public:
         result = 0;
         size_t num_bytes = 0;
         while (true) {
-            // Note. The implementation in AK::BufferStream::read_LEB128_unsigned read one
-            //       past the end, this is fixed here.
             if (eof()) {
                 m_offset = backup;
                 set_recoverable_error();
@@ -119,7 +117,6 @@ public:
         return true;
     }
 
-    // LEB128 is a variable-length encoding for integers
     bool read_LEB128_signed(ssize_t& result)
     {
         const auto backup = m_offset;
@@ -129,8 +126,6 @@ public:
         u8 byte = 0;
 
         do {
-            // Note. The implementation in AK::BufferStream::read_LEB128_unsigned read one
-            //       past the end, this is fixed here.
             if (eof()) {
                 m_offset = backup;
                 set_recoverable_error();
@@ -160,14 +155,60 @@ private:
     size_t m_offset { 0 };
 };
 
-// All data written to this stream can be read from it. Reading and writing is done
-// using different offsets, meaning that it is not necessary to seek to the start
-// before reading; this behaviour differs from BufferStream.
+class OutputMemoryStream final : public OutputStream {
+public:
+    explicit OutputMemoryStream(Bytes bytes)
+        : m_bytes(bytes)
+    {
+    }
+
+    size_t write(ReadonlyBytes bytes) override
+    {
+        const auto nwritten = bytes.copy_trimmed_to(m_bytes.slice(m_offset));
+        m_offset += nwritten;
+        return nwritten;
+    }
+
+    bool write_or_error(ReadonlyBytes bytes) override
+    {
+        if (remaining() < bytes.size()) {
+            set_recoverable_error();
+            return false;
+        }
+
+        write(bytes);
+        return true;
+    }
+
+    size_t fill_to_end(u8 value)
+    {
+        const auto nwritten = m_bytes.slice(m_offset).fill(value);
+        m_offset += nwritten;
+        return nwritten;
+    }
+
+    bool is_end() const { return remaining() == 0; }
+
+    ReadonlyBytes bytes() const { return { data(), size() }; }
+    Bytes bytes() { return { data(), size() }; }
+
+    const u8* data() const { return m_bytes.data(); }
+    u8* data() { return m_bytes.data(); }
+
+    size_t size() const { return m_offset; }
+    size_t remaining() const { return m_bytes.size() - m_offset; }
+
+private:
+    size_t m_offset { 0 };
+    Bytes m_bytes;
+};
+
 class DuplexMemoryStream final : public DuplexStream {
 public:
     static constexpr size_t chunk_size = 4 * 1024;
 
-    bool eof() const override { return m_write_offset == m_read_offset; }
+    bool unreliable_eof() const override { return eof(); }
+    bool eof() const { return m_write_offset == m_read_offset; }
 
     bool discard_or_error(size_t count) override
     {
@@ -183,7 +224,7 @@ public:
 
     Optional<size_t> offset_of(ReadonlyBytes value) const
     {
-        if (value.size() > remaining())
+        if (value.size() > size())
             return {};
 
         // First, find which chunk we're in.
@@ -286,7 +327,7 @@ public:
 
     ByteBuffer copy_into_contiguous_buffer() const
     {
-        auto buffer = ByteBuffer::create_uninitialized(remaining());
+        auto buffer = ByteBuffer::create_uninitialized(size());
 
         const auto nread = read_without_consuming(buffer);
         ASSERT(nread == buffer.size());
@@ -297,7 +338,7 @@ public:
     size_t roffset() const { return m_read_offset; }
     size_t woffset() const { return m_write_offset; }
 
-    size_t remaining() const { return m_write_offset - m_read_offset; }
+    size_t size() const { return m_write_offset - m_read_offset; }
 
 private:
     void try_discard_chunks()
@@ -312,21 +353,6 @@ private:
     size_t m_write_offset { 0 };
     size_t m_read_offset { 0 };
     size_t m_base_offset { 0 };
-};
-
-class OutputMemoryStream final : public OutputStream {
-public:
-    size_t write(ReadonlyBytes bytes) override { return m_stream.write(bytes); }
-    bool write_or_error(ReadonlyBytes bytes) override { return m_stream.write_or_error(bytes); }
-
-    ByteBuffer copy_into_contiguous_buffer() const { return m_stream.copy_into_contiguous_buffer(); }
-
-    Optional<size_t> offset_of(ReadonlyBytes value) const { return m_stream.offset_of(value); }
-
-    size_t size() const { return m_stream.woffset(); }
-
-private:
-    DuplexMemoryStream m_stream;
 };
 
 }

@@ -26,55 +26,56 @@
 
 #include <AK/String.h>
 #include <LibCrypto/BigInt/SignedBigInteger.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/BigIntConstructor.h>
 #include <LibJS/Runtime/BigIntObject.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
 BigIntConstructor::BigIntConstructor(GlobalObject& global_object)
-    : NativeFunction("BigInt", *global_object.function_prototype())
+    : NativeFunction(vm().names.BigInt, *global_object.function_prototype())
 {
 }
 
 void BigIntConstructor::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property("prototype", global_object.bigint_prototype(), 0);
-    define_property("length", Value(1), Attribute::Configurable);
+    define_property(vm.names.prototype, global_object.bigint_prototype(), 0);
+    define_property(vm.names.length, Value(1), Attribute::Configurable);
 
     u8 attr = Attribute::Writable | Attribute::Configurable;
-    define_native_function("asIntN", as_int_n, 2, attr);
-    define_native_function("asUintN", as_uint_n, 2, attr);
+    define_native_function(vm.names.asIntN, as_int_n, 2, attr);
+    define_native_function(vm.names.asUintN, as_uint_n, 2, attr);
 }
 
 BigIntConstructor::~BigIntConstructor()
 {
 }
 
-Value BigIntConstructor::call(Interpreter& interpreter)
+Value BigIntConstructor::call()
 {
-    auto primitive = interpreter.argument(0).to_primitive(interpreter, Value::PreferredType::Number);
-    if (interpreter.exception())
+    auto primitive = vm().argument(0).to_primitive(Value::PreferredType::Number);
+    if (vm().exception())
         return {};
     if (primitive.is_number()) {
         if (!primitive.is_integer()) {
-            interpreter.throw_exception<RangeError>(ErrorType::BigIntIntArgument);
+            vm().throw_exception<RangeError>(global_object(), ErrorType::BigIntIntArgument);
             return {};
         }
-        return js_bigint(interpreter, Crypto::SignedBigInteger { primitive.as_i32() });
+        return js_bigint(heap(), Crypto::SignedBigInteger { primitive.as_i32() });
     }
-    auto* bigint = interpreter.argument(0).to_bigint(interpreter);
-    if (interpreter.exception())
+    auto* bigint = vm().argument(0).to_bigint(global_object());
+    if (vm().exception())
         return {};
     return bigint;
 }
 
-Value BigIntConstructor::construct(Interpreter& interpreter, Function&)
+Value BigIntConstructor::construct(Function&)
 {
-    interpreter.throw_exception<TypeError>(ErrorType::NotAConstructor, "BigInt");
+    vm().throw_exception<TypeError>(global_object(), ErrorType::NotAConstructor, "BigInt");
     return {};
 }
 

@@ -26,12 +26,10 @@
 
 #include <AK/StringBuilder.h>
 #include <LibJS/Heap/Heap.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/PrimitiveString.h>
 #include <LibJS/Runtime/RegExpObject.h>
 #include <LibJS/Runtime/Value.h>
-
 
 namespace JS {
 
@@ -53,7 +51,7 @@ RegExpObject::~RegExpObject()
 
 Value RegExpObject::to_string() const
 {
-    return js_string(interpreter(), String::format("/%s/%s", content().characters(), flags().characters()));
+    return js_string(heap(), String::formatted("/{}/{}", content(), flags()));
 }
 
 }

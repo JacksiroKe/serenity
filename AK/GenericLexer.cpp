@@ -26,6 +26,8 @@
 
 #include <AK/Assertions.h>
 #include <AK/GenericLexer.h>
+#include <AK/String.h>
+#include <AK/StringBuilder.h>
 
 namespace AK {
 
@@ -72,12 +74,6 @@ bool GenericLexer::next_is(const char* expected) const
         if (peek(i) != expected[i])
             return false;
     return true;
-}
-
-// Tests the next character against a Condition
-bool GenericLexer::next_is(Condition condition) const
-{
-    return condition(peek());
 }
 
 // Consume a character and advance the parser index
@@ -153,19 +149,6 @@ StringView GenericLexer::consume_line()
     return m_input.substring_view(start, length);
 }
 
-// Consume and return characters while `condition` returns true
-StringView GenericLexer::consume_while(Condition condition)
-{
-    size_t start = m_index;
-    while (!is_eof() && condition(peek()))
-        m_index++;
-    size_t length = m_index - start;
-
-    if (length == 0)
-        return {};
-    return m_input.substring_view(start, length);
-}
-
 // Consume and return characters until `stop` is peek'd
 // The `stop` character is ignored, as it is user-defined
 StringView GenericLexer::consume_until(char stop)
@@ -198,40 +181,61 @@ StringView GenericLexer::consume_until(const char* stop)
     return m_input.substring_view(start, length);
 }
 
-// Consume and return characters until `condition` return true
-StringView GenericLexer::consume_until(Condition condition)
+/*
+ * Consume a string surrounded by single or double quotes. The returned
+ * StringView does not include the quotes. An escape character can be provided
+ * to capture the enclosing quotes. Please note that the escape character will
+ * still be in the resulting StringView
+ */
+StringView GenericLexer::consume_quoted_string(char escape_char)
 {
-    size_t start = m_index;
-    while (!is_eof() && !condition(peek()))
-        m_index++;
-    size_t length = m_index - start;
-
-    if (length == 0)
-        return {};
-    return m_input.substring_view(start, length);
-}
-
-// Consume a string surrounded by single or double quotes
-// The returned StringView does not include the quotes
-StringView GenericLexer::consume_quoted_string()
-{
-    if (!is_quote(peek()))
+    if (!next_is(is_quote))
         return {};
 
     char quote_char = consume();
     size_t start = m_index;
-    while (!is_eof() && peek() != quote_char)
+    while (!is_eof()) {
+        if (next_is(escape_char))
+            m_index++;
+        else if (next_is(quote_char))
+            break;
         m_index++;
+    }
     size_t length = m_index - start;
 
     if (peek() != quote_char) {
-        m_index = start - 1; // Restore the index in case the string is unterminated
+        // Restore the index in case the string is unterminated
+        m_index = start - 1;
         return {};
     }
 
+    // Ignore closing quote
     ignore();
 
     return m_input.substring_view(start, length);
+}
+
+String GenericLexer::consume_and_unescape_string(char escape_char)
+{
+    auto view = consume_quoted_string(escape_char);
+    if (view.is_null())
+        return {};
+
+    // Transform common escape sequences
+    auto unescape_character = [](char c) {
+        static const char* escape_map = "n\nr\rt\tb\bf\f";
+        for (size_t i = 0; escape_map[i] != '\0'; i += 2)
+            if (c == escape_map[i])
+                return escape_map[i + 1];
+        return c;
+    };
+
+    StringBuilder builder;
+    for (size_t i = 0; i < view.length(); ++i) {
+        char c = (view[i] == escape_char) ? unescape_character(view[++i]) : view[i];
+        builder.append(c);
+    }
+    return builder.to_string();
 }
 
 // Ignore a number of characters (1 by default)
@@ -239,13 +243,6 @@ void GenericLexer::ignore(size_t count)
 {
     count = min(count, m_input.length() - m_index);
     m_index += count;
-}
-
-// Ignore characters while `condition` returns true
-void GenericLexer::ignore_while(Condition condition)
-{
-    while (!is_eof() && condition(peek()))
-        m_index++;
 }
 
 // Ignore characters until `stop` is peek'd
@@ -266,85 +263,6 @@ void GenericLexer::ignore_until(const char* stop)
         m_index++;
 
     ignore(__builtin_strlen(stop));
-}
-
-// Ignore characters until `condition` return true
-// We don't skip the stop character as it may not be a single value
-void GenericLexer::ignore_until(Condition condition)
-{
-    while (!is_eof() && !condition(peek()))
-        m_index++;
-}
-
-
-bool is_control(char c)
-{
-    return (c >= 0 && c <= 31) || c == 127;
-}
-
-bool is_whitespace(char c)
-{
-    return (c >= '\t' && c <= '\r') || c == ' ';
-}
-
-bool is_lowercase(char c)
-{
-    return c >= 'a' && c <= 'z';
-}
-
-bool is_uppercase(char c)
-{
-    return c >= 'A' && c <= 'Z';
-}
-
-bool is_digit(char c)
-{
-    return c >= '0' && c <= '9';
-}
-
-bool is_punctuation(char c)
-{
-    return (c >= '!' && c <= '/')
-        || (c >= ':' && c <= '@')
-        || (c >= '[' && c <= '`')
-        || (c >= '{' && c <= '~');
-}
-
-bool is_printable(char c)
-{
-    return c >= ' ' && c <= '~';
-}
-
-bool is_graphic(char c)
-{
-    return c > ' ' && c <= '~';
-}
-
-bool is_alpha(char c)
-{
-    return is_lowercase(c) || is_uppercase(c);
-}
-
-bool is_alphanum(char c)
-{
-    return is_alpha(c) || is_digit(c);
-}
-
-bool is_hex_digit(char c)
-{
-    return is_digit(c)
-        || (c >= 'A' && c <= 'F')
-        || (c >= 'a' && c <= 'f');
-}
-
-bool is_quote(char c)
-{
-    return c == '\'' || c == '"';
-}
-
-bool is_path_separator(char c)
-{
-    return c == '/' || c == '\\';
 }
 
 }

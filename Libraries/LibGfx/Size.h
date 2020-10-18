@@ -35,7 +35,7 @@ namespace Gfx {
 template<typename T>
 class Size {
 public:
-    Size() {}
+    Size() { }
 
     Size(T w, T h)
         : m_width(w)
@@ -67,6 +67,12 @@ public:
 
     void set_width(T w) { m_width = w; }
     void set_height(T h) { m_height = h; }
+
+    template<typename U>
+    bool contains(const Size<U>& other) const
+    {
+        return other.m_width <= m_width && other.m_height <= m_height;
+    }
 
     bool operator==(const Size<T>& other) const
     {

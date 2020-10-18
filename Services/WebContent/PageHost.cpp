@@ -50,7 +50,7 @@ void PageHost::setup_palette()
 {
     // FIXME: Get the proper palette from our peer somehow
     auto buffer = SharedBuffer::create_with_size(sizeof(Gfx::SystemTheme));
-    auto* theme = (Gfx::SystemTheme*)buffer->data();
+    auto* theme = buffer->data<Gfx::SystemTheme>();
     theme->color[(int)Gfx::ColorRole::Window] = Color::Magenta;
     theme->color[(int)Gfx::ColorRole::WindowText] = Color::Cyan;
     m_palette_impl = Gfx::PaletteImpl::create_with_shared_buffer(*buffer);
@@ -167,6 +167,11 @@ void PageHost::page_did_request_context_menu(const Gfx::IntPoint& content_positi
 void PageHost::page_did_request_link_context_menu(const Gfx::IntPoint& content_position, const URL& url, const String& target, unsigned modifiers)
 {
     m_client.post_message(Messages::WebContentClient::DidRequestLinkContextMenu(content_position, url, target, modifiers));
+}
+
+void PageHost::page_did_request_alert(const String& message)
+{
+    m_client.send_sync<Messages::WebContentClient::DidRequestAlert>(message);
 }
 
 }

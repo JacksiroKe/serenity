@@ -25,7 +25,6 @@
  */
 
 #include <AK/FlyString.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibWeb/Bindings/NavigatorObject.h>
@@ -62,7 +61,7 @@ NavigatorObject::~NavigatorObject()
 
 JS_DEFINE_NATIVE_GETTER(NavigatorObject::user_agent_getter)
 {
-    return JS::js_string(interpreter, ResourceLoader::the().user_agent());
+    return JS::js_string(vm, ResourceLoader::the().user_agent());
 }
 
 }

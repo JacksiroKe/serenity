@@ -44,6 +44,8 @@ public:
     DOM::Window& impl() { return *m_impl; }
     const DOM::Window& impl() const { return *m_impl; }
 
+    Origin origin() const;
+
     XMLHttpRequestPrototype* xhr_prototype() { return m_xhr_prototype; }
     XMLHttpRequestConstructor* xhr_constructor() { return m_xhr_constructor; }
 
@@ -53,6 +55,8 @@ private:
 
     JS_DECLARE_NATIVE_GETTER(document_getter);
     JS_DECLARE_NATIVE_SETTER(document_setter);
+
+    JS_DECLARE_NATIVE_GETTER(performance_getter);
 
     JS_DECLARE_NATIVE_FUNCTION(alert);
     JS_DECLARE_NATIVE_FUNCTION(confirm);

@@ -27,7 +27,6 @@
 #include "Font.h"
 #include "Bitmap.h"
 #include "Emoji.h"
-#include <AK/BufferStream.h>
 #include <AK/MappedFile.h>
 #include <AK/StdLibExtras.h>
 #include <AK/StringBuilder.h>
@@ -35,8 +34,7 @@
 #include <AK/Utf8View.h>
 #include <AK/Vector.h>
 #include <AK/kmalloc.h>
-#include <errno.h>
-#include <fcntl.h>
+#include <LibCore/FileStream.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,7 +51,9 @@ struct [[gnu::packed]] FontFileHeader
     u8 type;
     u8 is_variable_width;
     u8 glyph_spacing;
-    u8 unused[5];
+    u8 baseline;
+    u8 mean_line;
+    u8 unused[3];
     char name[64];
 };
 
@@ -112,7 +112,7 @@ NonnullRefPtr<Font> Font::clone() const
         memcpy(new_widths, m_glyph_widths, m_glyph_count);
     else
         memset(new_widths, m_glyph_width, m_glyph_count);
-    return adopt(*new Font(m_name, new_rows, new_widths, m_fixed_width, m_glyph_width, m_glyph_height, m_glyph_spacing, m_type));
+    return adopt(*new Font(m_name, new_rows, new_widths, m_fixed_width, m_glyph_width, m_glyph_height, m_glyph_spacing, m_type, m_baseline, m_mean_line));
 }
 
 NonnullRefPtr<Font> Font::create(u8 glyph_height, u8 glyph_width, bool fixed, FontTypes type)
@@ -124,10 +124,10 @@ NonnullRefPtr<Font> Font::create(u8 glyph_height, u8 glyph_width, bool fixed, Fo
     memset(new_rows, 0, bytes_per_glyph * count);
     auto* new_widths = static_cast<u8*>(malloc(count));
     memset(new_widths, glyph_width, count);
-    return adopt(*new Font("Untitled", new_rows, new_widths, fixed, glyph_width, glyph_height, 1, type));
+    return adopt(*new Font("Untitled", new_rows, new_widths, fixed, glyph_width, glyph_height, 1, type, 0, 0));
 }
 
-Font::Font(const StringView& name, unsigned* rows, u8* widths, bool is_fixed_width, u8 glyph_width, u8 glyph_height, u8 glyph_spacing, FontTypes type)
+Font::Font(const StringView& name, unsigned* rows, u8* widths, bool is_fixed_width, u8 glyph_width, u8 glyph_height, u8 glyph_spacing, FontTypes type, u8 baseline, u8 mean_line)
     : m_name(name)
     , m_type(type)
     , m_rows(rows)
@@ -137,10 +137,11 @@ Font::Font(const StringView& name, unsigned* rows, u8* widths, bool is_fixed_wid
     , m_min_glyph_width(glyph_width)
     , m_max_glyph_width(glyph_width)
     , m_glyph_spacing(glyph_spacing)
+    , m_baseline(baseline)
+    , m_mean_line(mean_line)
     , m_fixed_width(is_fixed_width)
 {
-    // FIXME: This is just a dumb guess. It would be cool to know the actual x-height of the font!
-    m_x_height = glyph_height / 2;
+    update_x_height();
 
     m_glyph_count = glyph_count_by_type(m_type);
 
@@ -189,7 +190,7 @@ RefPtr<Font> Font::load_from_memory(const u8* data)
     u8* widths = nullptr;
     if (header.is_variable_width)
         widths = (u8*)(rows) + count * bytes_per_glyph;
-    return adopt(*new Font(String(header.name), rows, widths, !header.is_variable_width, header.glyph_width, header.glyph_height, header.glyph_spacing, type));
+    return adopt(*new Font(String(header.name), rows, widths, !header.is_variable_width, header.glyph_width, header.glyph_height, header.glyph_spacing, type, header.baseline, header.mean_line));
 }
 
 size_t Font::glyph_count_by_type(FontTypes type)
@@ -220,26 +221,14 @@ RefPtr<Font> Font::load_from_file(const StringView& path)
 
 bool Font::write_to_file(const StringView& path)
 {
-    int fd;
-#ifdef __serenity__
-    fd = creat_with_path_length(path.characters_without_null_termination(), path.length(), 0644);
-#else
-    {
-        String null_terminated_path = path;
-        fd = creat(null_terminated_path.characters(), 0644);
-    }
-#endif
-    if (fd < 0) {
-        perror("open");
-        return false;
-    }
-
     FontFileHeader header;
     memset(&header, 0, sizeof(FontFileHeader));
     memcpy(header.magic, "!Fnt", 4);
     header.glyph_width = m_glyph_width;
     header.glyph_height = m_glyph_height;
     header.type = m_type;
+    header.baseline = m_baseline;
+    header.mean_line = m_mean_line;
     header.is_variable_width = !m_fixed_width;
     header.glyph_spacing = m_glyph_spacing;
     memcpy(header.name, m_name.characters(), min(m_name.length(), (size_t)63));
@@ -247,18 +236,19 @@ bool Font::write_to_file(const StringView& path)
     size_t bytes_per_glyph = sizeof(unsigned) * m_glyph_height;
     size_t count = glyph_count_by_type(m_type);
 
-    auto buffer = ByteBuffer::create_uninitialized(sizeof(FontFileHeader) + (count * bytes_per_glyph) + count);
-    BufferStream stream(buffer);
+    auto stream_result = Core::OutputFileStream::open_buffered(path);
+    if (stream_result.is_error())
+        return false;
+    auto& stream = stream_result.value();
 
-    stream << ByteBuffer::wrap(&header, sizeof(FontFileHeader));
-    stream << ByteBuffer::wrap(m_rows, (count * bytes_per_glyph));
-    stream << ByteBuffer::wrap(m_glyph_widths, count);
+    stream << ReadonlyBytes { &header, sizeof(header) };
+    stream << ReadonlyBytes { m_rows, count * bytes_per_glyph };
+    stream << ReadonlyBytes { m_glyph_widths, count };
 
-    ASSERT(stream.at_end());
-    ssize_t nwritten = write(fd, buffer.data(), buffer.size());
-    ASSERT(nwritten == (ssize_t)buffer.size());
-    int rc = close(fd);
-    ASSERT(rc == 0);
+    stream.flush();
+    if (stream.handle_any_error())
+        return false;
+
     return true;
 }
 

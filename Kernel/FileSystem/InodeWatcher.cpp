@@ -57,7 +57,7 @@ bool InodeWatcher::can_write(const FileDescription&, size_t) const
     return true;
 }
 
-KResultOr<size_t> InodeWatcher::read(FileDescription&, size_t, u8* buffer, size_t buffer_size)
+KResultOr<size_t> InodeWatcher::read(FileDescription&, size_t, UserOrKernelBuffer& buffer, size_t buffer_size)
 {
     LOCKER(m_lock);
     ASSERT(!m_queue.is_empty() || !m_inode);
@@ -65,14 +65,23 @@ KResultOr<size_t> InodeWatcher::read(FileDescription&, size_t, u8* buffer, size_
     if (!m_inode)
         return 0;
 
-    // FIXME: What should we do if the output buffer is too small?
-    ASSERT(buffer_size >= (int)sizeof(Event));
     auto event = m_queue.dequeue();
-    memcpy(buffer, &event, sizeof(event));
-    return sizeof(event);
+
+    if (buffer_size < sizeof(Event))
+        return buffer_size;
+
+    size_t bytes_to_write = min(buffer_size, sizeof(event));
+
+    ssize_t nwritten = buffer.write_buffered<sizeof(event)>(bytes_to_write, [&](u8* data, size_t data_bytes) {
+        memcpy(data, &event, bytes_to_write);
+        return (ssize_t)data_bytes;
+    });
+    if (nwritten < 0)
+        return KResult(nwritten);
+    return bytes_to_write;
 }
 
-KResultOr<size_t> InodeWatcher::write(FileDescription&, size_t, const u8*, size_t)
+KResultOr<size_t> InodeWatcher::write(FileDescription&, size_t, const UserOrKernelBuffer&, size_t)
 {
     return KResult(-EIO);
 }
@@ -87,19 +96,19 @@ String InodeWatcher::absolute_path(const FileDescription&) const
 void InodeWatcher::notify_inode_event(Badge<Inode>, Event::Type event_type)
 {
     LOCKER(m_lock);
-    m_queue.enqueue({ event_type, {} });
+    m_queue.enqueue({ event_type });
 }
 
-void InodeWatcher::notify_child_added(Badge<Inode>, const String& child_name)
+void InodeWatcher::notify_child_added(Badge<Inode>, const InodeIdentifier& child_id)
 {
     LOCKER(m_lock);
-    m_queue.enqueue({ Event::Type::ChildAdded, child_name });
+    m_queue.enqueue({ Event::Type::ChildAdded, child_id.index() });
 }
 
-void InodeWatcher::notify_child_removed(Badge<Inode>, const String& child_name)
+void InodeWatcher::notify_child_removed(Badge<Inode>, const InodeIdentifier& child_id)
 {
     LOCKER(m_lock);
-    m_queue.enqueue({ Event::Type::ChildRemoved, child_name });
+    m_queue.enqueue({ Event::Type::ChildRemoved, child_id.index() });
 }
 
 }

@@ -41,6 +41,8 @@
 #    undef JOB_TIME_INFO
 #endif
 
+namespace Shell {
+
 struct LocalFrame;
 
 class Job : public RefCounted<Job> {
@@ -52,7 +54,8 @@ public:
 #ifdef JOB_TIME_INFO
         if (m_active) {
             auto elapsed = m_command_timer.elapsed();
-            dbg() << "Command \"" << m_cmd << "\" finished in " << elapsed << " ms";
+            // Don't mistake this for the command!
+            dbg() << "Job entry \"" << m_cmd << "\" deleted in " << elapsed << " ms";
         }
 #endif
     }
@@ -126,3 +129,5 @@ private:
     bool m_should_be_disowned { false };
     OwnPtr<AST::Command> m_command;
 };
+
+}

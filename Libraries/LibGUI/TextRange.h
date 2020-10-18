@@ -33,7 +33,7 @@ namespace GUI {
 
 class TextRange {
 public:
-    TextRange() {}
+    TextRange() { }
     TextRange(const TextPosition& start, const TextPosition& end)
         : m_start(start)
         , m_end(end)
@@ -91,5 +91,20 @@ inline const LogStream& operator<<(const LogStream& stream, const TextRange& val
         return stream << "GUI::TextRange(Invalid)";
     return stream << value.start() << '-' << value.end();
 }
+
+}
+
+namespace AK {
+
+template<>
+struct Formatter<GUI::TextRange> : Formatter<StringView> {
+    void format(TypeErasedFormatParams& params, FormatBuilder& builder, const GUI::TextRange& value)
+    {
+        if (value.is_valid())
+            Formatter<StringView>::format(params, builder, String::formatted("{}-{}", value.start(), value.end()));
+        else
+            Formatter<StringView>::format(params, builder, "GUI::TextRange(Invalid)");
+    }
+};
 
 }

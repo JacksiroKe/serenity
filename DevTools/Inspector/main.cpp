@@ -36,14 +36,15 @@
 #include <LibGUI/ModelEditingDelegate.h>
 #include <LibGUI/ProcessChooser.h>
 #include <LibGUI/Splitter.h>
-#include <LibGUI/TableView.h>
 #include <LibGUI/TreeView.h>
 #include <LibGUI/Window.h>
 #include <stdio.h>
 
+using namespace Inspector;
+
 [[noreturn]] static void print_usage_and_exit()
 {
-    printf("usage: Inspector <pid>\n");
+    outln("usage: Inspector <pid>");
     exit(0);
 }
 
@@ -116,7 +117,7 @@ int main(int argc, char** argv)
 
     remote_process.on_update = [&] {
         if (!remote_process.process_name().is_null())
-            window->set_title(String::format("%s (%d) - Inspector", remote_process.process_name().characters(), remote_process.pid()));
+            window->set_title(String::formatted("{} ({}) - Inspector", remote_process.process_name(), remote_process.pid()));
     };
 
     auto& tree_view = splitter.add<GUI::TreeView>();

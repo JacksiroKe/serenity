@@ -25,7 +25,6 @@
  */
 
 #include <AK/StringBuilder.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Object.h>
@@ -33,71 +32,71 @@
 
 namespace JS {
 
-void Reference::put(Interpreter& interpreter, GlobalObject& global_object, Value value)
+void Reference::put(GlobalObject& global_object, Value value)
 {
-    // NOTE: The caller is responsible for doing an exception check after assign().
+    auto& vm = global_object.vm();
 
     if (is_unresolvable()) {
-        throw_reference_error(interpreter, global_object);
+        throw_reference_error(global_object);
         return;
     }
 
     if (is_local_variable() || is_global_variable()) {
         if (is_local_variable())
-            interpreter.set_variable(m_name.to_string(), value, global_object);
+            vm.set_variable(m_name.to_string(), value, global_object);
         else
             global_object.put(m_name, value);
         return;
     }
 
-    if (!base().is_object() && interpreter.in_strict_mode()) {
-        interpreter.throw_exception<TypeError>(ErrorType::ReferencePrimitiveAssignment, m_name.to_string().characters());
+    if (!base().is_object() && vm.in_strict_mode()) {
+        vm.throw_exception<TypeError>(global_object, ErrorType::ReferencePrimitiveAssignment, m_name.to_string());
         return;
     }
 
-    auto* object = base().to_object(interpreter, global_object);
+    auto* object = base().to_object(global_object);
     if (!object)
         return;
 
     object->put(m_name, value);
 }
 
-void Reference::throw_reference_error(Interpreter& interpreter, GlobalObject&)
+void Reference::throw_reference_error(GlobalObject& global_object)
 {
     auto property_name = m_name.to_string();
     String message;
     if (property_name.is_empty()) {
-        interpreter.throw_exception<ReferenceError>(ErrorType::ReferenceUnresolvable);
+        global_object.vm().throw_exception<ReferenceError>(global_object, ErrorType::ReferenceUnresolvable);
     } else {
-        interpreter.throw_exception<ReferenceError>(ErrorType::UnknownIdentifier, property_name.characters());
+        global_object.vm().throw_exception<ReferenceError>(global_object, ErrorType::UnknownIdentifier, property_name);
     }
 }
 
-Value Reference::get(Interpreter& interpreter, GlobalObject& global_object)
+Value Reference::get(GlobalObject& global_object)
 {
-    // NOTE: The caller is responsible for doing an exception check after fetch().
+    auto& vm = global_object.vm();
 
     if (is_unresolvable()) {
-        throw_reference_error(interpreter, global_object);
+        throw_reference_error(global_object);
         return {};
     }
 
     if (is_local_variable() || is_global_variable()) {
         Value value;
         if (is_local_variable())
-            value = interpreter.get_variable(m_name.to_string(), global_object);
+            value = vm.get_variable(m_name.to_string(), global_object);
         else
             value = global_object.get(m_name);
-        if (interpreter.exception())
+        if (vm.exception())
             return {};
         if (value.is_empty()) {
-            throw_reference_error(interpreter, global_object);
+            throw_reference_error(global_object);
             return {};
         }
         return value;
     }
 
-    auto* object = base().to_object(interpreter, global_object);
+    auto* object = base().to_object(global_object);
     if (!object)
         return {};
 

@@ -43,6 +43,8 @@
 
 #define TOP_LEVEL_TEST_NAME "__$$TOP_LEVEL$$__"
 
+RefPtr<JS::VM> vm;
+
 static bool collect_on_every_allocation = false;
 static String currently_running_test;
 
@@ -152,13 +154,15 @@ TestRunnerGlobalObject::~TestRunnerGlobalObject()
 void TestRunnerGlobalObject::initialize()
 {
     JS::GlobalObject::initialize();
-    define_property("global", this, JS::Attribute::Enumerable);
-    define_native_function("isStrictMode", is_strict_mode);
+    static FlyString global_property_name { "global" };
+    static FlyString is_strict_mode_property_name { "isStrictMode" };
+    define_property(global_property_name, this, JS::Attribute::Enumerable);
+    define_native_function(is_strict_mode_property_name, is_strict_mode);
 }
 
 JS_DEFINE_NATIVE_FUNCTION(TestRunnerGlobalObject::is_strict_mode)
 {
-    return JS::Value(interpreter.in_strict_mode());
+    return JS::Value(vm.in_strict_mode());
 }
 
 static void cleanup_and_exit()
@@ -258,8 +262,8 @@ static Result<NonnullRefPtr<JS::Program>, ParserError> parse_file(const String& 
 
 static Optional<JsonValue> get_test_results(JS::Interpreter& interpreter)
 {
-    auto result = interpreter.get_variable("__TestResults__", interpreter.global_object());
-    auto json_string = JS::JSONObject::stringify_impl(interpreter, interpreter.global_object(), result, JS::js_undefined(), JS::js_undefined());
+    auto result = vm->get_variable("__TestResults__", interpreter.global_object());
+    auto json_string = JS::JSONObject::stringify_impl(interpreter.global_object(), result, JS::js_undefined(), JS::js_undefined());
 
     auto json = JsonValue::from_string(json_string);
     if (!json.has_value())
@@ -273,7 +277,10 @@ JSFileResult TestRunner::run_file_test(const String& test_path)
     currently_running_test = test_path;
 
     double start_time = get_time_in_ms();
-    auto interpreter = JS::Interpreter::create<TestRunnerGlobalObject>();
+    auto interpreter = JS::Interpreter::create<TestRunnerGlobalObject>(*vm);
+
+    // FIXME: This is a hack while we're refactoring Interpreter/VM stuff.
+    JS::VM::InterpreterExecutionScope scope(*interpreter);
 
     interpreter->heap().set_should_collect_on_every_allocation(collect_on_every_allocation);
 
@@ -305,7 +312,7 @@ JSFileResult TestRunner::run_file_test(const String& test_path)
     JSFileResult file_result { test_path.substring(m_test_root.length() + 1, test_path.length() - m_test_root.length() - 1) };
 
     // Collect logged messages
-    auto& arr = interpreter->get_variable("__UserOutput__", interpreter->global_object()).as_array();
+    auto& arr = interpreter->vm().get_variable("__UserOutput__", interpreter->global_object()).as_array();
     for (auto& entry : arr.indexed_properties()) {
         auto message = entry.value_and_attributes(&interpreter->global_object()).value;
         file_result.logged_messages.append(message.to_string_without_side_effects());
@@ -574,7 +581,6 @@ void TestRunner::print_test_results() const
 int main(int argc, char** argv)
 {
     bool print_times = false;
-
     struct sigaction act;
     memset(&act, 0, sizeof(act));
     act.sa_flags = SA_NOCLDWAIT;
@@ -603,6 +609,8 @@ int main(int argc, char** argv)
         DebugLogStream::set_enabled(false);
     }
 
+    vm = JS::VM::create();
+
 #ifdef __serenity__
     TestRunner("/home/anon/js-tests", print_times).run();
 #else
@@ -613,6 +621,8 @@ int main(int argc, char** argv)
     }
     TestRunner(String::format("%s/Libraries/LibJS/Tests", serenity_root), print_times).run();
 #endif
+
+    vm = nullptr;
 
     return 0;
 }

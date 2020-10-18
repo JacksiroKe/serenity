@@ -28,8 +28,10 @@
 #include <AK/JsonObject.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
+#include <LibGUI/BoxLayout.h>
 #include <LibGUI/Button.h>
 #include <LibGUI/CheckBox.h>
+#include <LibGUI/ColorInput.h>
 #include <LibGUI/Event.h>
 #include <LibGUI/GroupBox.h>
 #include <LibGUI/Label.h>
@@ -40,7 +42,11 @@
 #include <LibGUI/ScrollBar.h>
 #include <LibGUI/Slider.h>
 #include <LibGUI/SpinBox.h>
+#include <LibGUI/Splitter.h>
+#include <LibGUI/StatusBar.h>
 #include <LibGUI/TextBox.h>
+#include <LibGUI/ToolBar.h>
+#include <LibGUI/ToolBarContainer.h>
 #include <LibGUI/Widget.h>
 #include <LibGUI/Window.h>
 #include <LibGUI/WindowServerConnection.h>
@@ -51,16 +57,23 @@
 
 namespace GUI {
 
-REGISTER_WIDGET(Button)
-REGISTER_WIDGET(CheckBox)
-REGISTER_WIDGET(GroupBox)
-REGISTER_WIDGET(Label)
-REGISTER_WIDGET(RadioButton)
-REGISTER_WIDGET(ScrollBar)
-REGISTER_WIDGET(Slider)
-REGISTER_WIDGET(SpinBox)
-REGISTER_WIDGET(TextBox)
-REGISTER_WIDGET(Widget)
+REGISTER_WIDGET(GUI, Button)
+REGISTER_WIDGET(GUI, CheckBox)
+REGISTER_WIDGET(GUI, ColorInput)
+REGISTER_WIDGET(GUI, Frame)
+REGISTER_WIDGET(GUI, GroupBox)
+REGISTER_WIDGET(GUI, HorizontalSplitter)
+REGISTER_WIDGET(GUI, Label)
+REGISTER_WIDGET(GUI, RadioButton)
+REGISTER_WIDGET(GUI, ScrollBar)
+REGISTER_WIDGET(GUI, Slider)
+REGISTER_WIDGET(GUI, SpinBox)
+REGISTER_WIDGET(GUI, StatusBar)
+REGISTER_WIDGET(GUI, TextBox)
+REGISTER_WIDGET(GUI, TextEditor)
+REGISTER_WIDGET(GUI, ToolBar)
+REGISTER_WIDGET(GUI, ToolBarContainer)
+REGISTER_WIDGET(GUI, Widget)
 
 static HashMap<String, WidgetClassRegistration*>& widget_classes()
 {
@@ -100,6 +113,17 @@ Widget::Widget()
     , m_font(Gfx::Font::default_font())
     , m_palette(Application::the()->palette().impl())
 {
+    REGISTER_RECT_PROPERTY("relative_rect", relative_rect, set_relative_rect);
+    REGISTER_BOOL_PROPERTY("fill_with_background_color", fill_with_background_color, set_fill_with_background_color);
+    REGISTER_BOOL_PROPERTY("visible", is_visible, set_visible);
+    REGISTER_BOOL_PROPERTY("focused", is_focused, set_focus);
+    REGISTER_BOOL_PROPERTY("enabled", is_enabled, set_enabled);
+    REGISTER_STRING_PROPERTY("tooltip", tooltip, set_tooltip);
+    REGISTER_SIZE_PROPERTY("preferred_size", preferred_size, set_preferred_size);
+    REGISTER_INT_PROPERTY("preferred_width", preferred_width, set_preferred_width);
+    REGISTER_INT_PROPERTY("preferred_height", preferred_height, set_preferred_height);
+    REGISTER_SIZE_POLICY_PROPERTY("horizontal_size_policy", horizontal_size_policy, set_horizontal_size_policy);
+    REGISTER_SIZE_POLICY_PROPERTY("vertical_size_policy", vertical_size_policy, set_vertical_size_policy);
 }
 
 Widget::~Widget()
@@ -318,14 +342,16 @@ void Widget::handle_mousedoubleclick_event(MouseEvent& event)
 
 void Widget::handle_enter_event(Core::Event& event)
 {
-    window()->update_cursor({});
+    if (auto* window = this->window())
+        window->update_cursor({});
     show_tooltip();
     enter_event(event);
 }
 
 void Widget::handle_leave_event(Core::Event& event)
 {
-    window()->update_cursor({});
+    if (auto* window = this->window())
+        window->update_cursor({});
     Application::the()->hide_tooltip();
     leave_event(event);
 }
@@ -764,46 +790,6 @@ void Widget::set_forecolor(const StringView& color_string)
     set_foreground_color(color.value());
 }
 
-void Widget::save_to(AK::JsonObject& json)
-{
-    json.set("relative_rect", relative_rect().to_string());
-    json.set("fill_with_background_color", fill_with_background_color());
-    json.set("tooltip", tooltip());
-    json.set("visible", is_visible());
-    json.set("focused", is_focused());
-    json.set("enabled", is_enabled());
-    json.set("background_color", background_color().to_string());
-    json.set("foreground_color", foreground_color().to_string());
-    json.set("preferred_size", preferred_size().to_string());
-    json.set("size_policy", String::format("[%s,%s]", to_string(horizontal_size_policy()), to_string(vertical_size_policy())));
-    Core::Object::save_to(json);
-}
-
-bool Widget::set_property(const StringView& name, const JsonValue& value)
-{
-    if (name == "fill_with_background_color") {
-        set_fill_with_background_color(value.to_bool());
-        return true;
-    }
-    if (name == "tooltip") {
-        set_tooltip(value.to_string());
-        return true;
-    }
-    if (name == "enable") {
-        set_enabled(value.to_bool());
-        return true;
-    }
-    if (name == "focused") {
-        set_focus(value.to_bool());
-        return true;
-    }
-    if (name == "visible") {
-        set_visible(value.to_bool());
-        return true;
-    }
-    return Core::Object::set_property(name, value);
-}
-
 Vector<Widget*> Widget::child_widgets() const
 {
     Vector<Widget*> widgets;
@@ -890,4 +876,103 @@ void Widget::set_override_cursor(Gfx::StandardCursor cursor)
         window->update_cursor({});
 }
 
+bool Widget::load_from_json(const StringView& json_string)
+{
+    auto json_value = JsonValue::from_string(json_string);
+    if (!json_value.has_value()) {
+        dbg() << "load_from_json parse failed: _" << json_string << "_";
+        return false;
+    }
+    if (!json_value.value().is_object()) {
+        dbg() << "load_from_json parse non-object";
+        return false;
+    }
+    return load_from_json(json_value.value().as_object());
+}
+
+bool Widget::load_from_json(const JsonObject& json)
+{
+    json.for_each_member([&](auto& key, auto& value) {
+        set_property(key, value);
+    });
+
+    auto layout_value = json.get("layout");
+    if (!layout_value.is_null() && !layout_value.is_object()) {
+        dbg() << "layout is not an object";
+        return false;
+    }
+    if (layout_value.is_object()) {
+        auto& layout = layout_value.as_object();
+        auto class_name = layout.get("class");
+        if (class_name.is_null()) {
+            dbg() << "Invalid layout class name";
+            return false;
+        }
+
+        if (class_name.to_string() == "GUI::VerticalBoxLayout") {
+            set_layout<GUI::VerticalBoxLayout>();
+        } else if (class_name.to_string() == "GUI::HorizontalBoxLayout") {
+            set_layout<GUI::HorizontalBoxLayout>();
+        } else {
+            dbg() << "Unknown layout class: '" << class_name.to_string() << "'";
+            return false;
+        }
+
+        layout.for_each_member([&](auto& key, auto& value) {
+            this->layout()->set_property(key, value);
+        });
+    }
+
+    auto children = json.get("children");
+    if (children.is_array()) {
+        for (auto& child_json_value : children.as_array().values()) {
+            if (!child_json_value.is_object())
+                return false;
+            auto& child_json = child_json_value.as_object();
+            auto class_name = child_json.get("class");
+            if (!class_name.is_string()) {
+                dbg() << "No class name in entry";
+                return false;
+            }
+            auto* registration = WidgetClassRegistration::find(class_name.as_string());
+            if (!registration) {
+                dbg() << "Class '" << class_name.as_string() << "' not registered";
+                return false;
+            }
+
+            auto child_widget = registration->construct();
+            add_child(*child_widget);
+            child_widget->load_from_json(child_json);
+        }
+    }
+
+    return true;
+}
+
+Widget* Widget::find_child_by_name(const String& name)
+{
+    Widget* found_widget = nullptr;
+    for_each_child_widget([&](auto& child) {
+        if (child.name() == name) {
+            found_widget = &child;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return found_widget;
+}
+
+Widget* Widget::find_descendant_by_name(const String& name)
+{
+    Widget* found_widget = nullptr;
+    if (this->name() == name)
+        return this;
+    for_each_child_widget([&](auto& child) {
+        found_widget = child.find_descendant_by_name(name);
+        if (found_widget)
+            return IterationDecision::Break;
+        return IterationDecision::Continue;
+    });
+    return found_widget;
+}
 }

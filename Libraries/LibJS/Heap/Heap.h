@@ -33,8 +33,10 @@
 #include <AK/Vector.h>
 #include <LibCore/Forward.h>
 #include <LibJS/Forward.h>
+#include <LibJS/Heap/Allocator.h>
 #include <LibJS/Heap/Handle.h>
 #include <LibJS/Runtime/Cell.h>
+#include <LibJS/Runtime/Object.h>
 
 namespace JS {
 
@@ -43,7 +45,7 @@ class Heap {
     AK_MAKE_NONMOVABLE(Heap);
 
 public:
-    explicit Heap(Interpreter&);
+    explicit Heap(VM&);
     ~Heap();
 
     template<typename T, typename... Args>
@@ -60,7 +62,12 @@ public:
         auto* memory = allocate_cell(sizeof(T));
         new (memory) T(forward<Args>(args)...);
         auto* cell = static_cast<T*>(memory);
+        constexpr bool is_object = IsBaseOf<Object, T>::value;
+        if constexpr (is_object)
+            static_cast<Object*>(cell)->disable_transitions();
         cell->initialize(global_object);
+        if constexpr (is_object)
+            static_cast<Object*>(cell)->enable_transitions();
         return cell;
     }
 
@@ -71,7 +78,7 @@ public:
 
     void collect_garbage(CollectionType = CollectionType::CollectGarbage, bool print_report = false);
 
-    Interpreter& interpreter() { return m_interpreter; }
+    VM& vm() { return m_vm; }
 
     bool should_collect_on_every_allocation() const { return m_should_collect_on_every_allocation; }
     void set_should_collect_on_every_allocation(bool b) { m_should_collect_on_every_allocation = b; }
@@ -95,19 +102,33 @@ private:
 
     Cell* cell_from_possible_pointer(FlatPtr);
 
+    Allocator& allocator_for_size(size_t);
+
+    template<typename Callback>
+    void for_each_block(Callback callback)
+    {
+        for (auto& allocator : m_allocators) {
+            if (allocator->for_each_block(callback) == IterationDecision::Break)
+                return;
+        }
+    }
+
     size_t m_max_allocations_between_gc { 10000 };
     size_t m_allocations_since_last_gc { false };
 
     bool m_should_collect_on_every_allocation { false };
 
-    Interpreter& m_interpreter;
-    Vector<NonnullOwnPtr<HeapBlock>> m_blocks;
+    VM& m_vm;
+
+    Vector<NonnullOwnPtr<Allocator>> m_allocators;
     HashTable<HandleImpl*> m_handles;
 
     HashTable<MarkedValueList*> m_marked_value_lists;
 
     size_t m_gc_deferrals { 0 };
     bool m_should_gc_when_deferral_ends { false };
+
+    bool m_collecting_garbage { false };
 };
 
 }

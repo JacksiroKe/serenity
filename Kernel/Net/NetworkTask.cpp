@@ -52,16 +52,16 @@
 namespace Kernel {
 
 static void handle_arp(const EthernetFrameHeader&, size_t frame_size);
-static void handle_ipv4(const EthernetFrameHeader&, size_t frame_size);
-static void handle_icmp(const EthernetFrameHeader&, const IPv4Packet&);
-static void handle_udp(const IPv4Packet&);
-static void handle_tcp(const IPv4Packet&);
+static void handle_ipv4(const EthernetFrameHeader&, size_t frame_size, const timeval& packet_timestamp);
+static void handle_icmp(const EthernetFrameHeader&, const IPv4Packet&, const timeval& packet_timestamp);
+static void handle_udp(const IPv4Packet&, const timeval& packet_timestamp);
+static void handle_tcp(const IPv4Packet&, const timeval& packet_timestamp);
 
 [[noreturn]] static void NetworkTask_main();
 
 void NetworkTask::spawn()
 {
-    Thread* thread = nullptr;
+    RefPtr<Thread> thread;
     Process::create_kernel_process(thread, "NetworkTask", NetworkTask_main);
 }
 
@@ -89,14 +89,14 @@ void NetworkTask_main()
         };
     });
 
-    auto dequeue_packet = [&pending_packets](u8* buffer, size_t buffer_size) -> size_t {
+    auto dequeue_packet = [&pending_packets](u8* buffer, size_t buffer_size, timeval& packet_timestamp) -> size_t {
         if (pending_packets == 0)
             return 0;
         size_t packet_size = 0;
         NetworkAdapter::for_each([&](auto& adapter) {
             if (packet_size || !adapter.has_queued_packets())
                 return;
-            packet_size = adapter.dequeue_packet(buffer, buffer_size);
+            packet_size = adapter.dequeue_packet(buffer, buffer_size, packet_timestamp);
             pending_packets--;
 #ifdef NETWORK_TASK_DEBUG
             klog() << "NetworkTask: Dequeued packet from " << adapter.name().characters() << " (" << packet_size << " bytes)";
@@ -108,10 +108,11 @@ void NetworkTask_main()
     size_t buffer_size = 64 * KiB;
     auto buffer_region = MM.allocate_kernel_region(buffer_size, "Kernel Packet Buffer", Region::Access::Read | Region::Access::Write, false, true);
     auto buffer = (u8*)buffer_region->vaddr().get();
+    timeval packet_timestamp;
 
     klog() << "NetworkTask: Enter main loop.";
     for (;;) {
-        size_t packet_size = dequeue_packet(buffer, buffer_size);
+        size_t packet_size = dequeue_packet(buffer, buffer_size, packet_timestamp);
         if (!packet_size) {
             Thread::current()->wait_on(packet_wait_queue, "NetworkTask");
             continue;
@@ -150,7 +151,7 @@ void NetworkTask_main()
             handle_arp(eth, packet_size);
             break;
         case EtherType::IPv4:
-            handle_ipv4(eth, packet_size);
+            handle_ipv4(eth, packet_size, packet_timestamp);
             break;
         case EtherType::IPv6:
             // ignore
@@ -213,7 +214,7 @@ void handle_arp(const EthernetFrameHeader& eth, size_t frame_size)
     }
 }
 
-void handle_ipv4(const EthernetFrameHeader& eth, size_t frame_size)
+void handle_ipv4(const EthernetFrameHeader& eth, size_t frame_size, const timeval& packet_timestamp)
 {
     constexpr size_t minimum_ipv4_frame_size = sizeof(EthernetFrameHeader) + sizeof(IPv4Packet);
     if (frame_size < minimum_ipv4_frame_size) {
@@ -239,18 +240,18 @@ void handle_ipv4(const EthernetFrameHeader& eth, size_t frame_size)
 
     switch ((IPv4Protocol)packet.protocol()) {
     case IPv4Protocol::ICMP:
-        return handle_icmp(eth, packet);
+        return handle_icmp(eth, packet, packet_timestamp);
     case IPv4Protocol::UDP:
-        return handle_udp(packet);
+        return handle_udp(packet, packet_timestamp);
     case IPv4Protocol::TCP:
-        return handle_tcp(packet);
+        return handle_tcp(packet, packet_timestamp);
     default:
         klog() << "handle_ipv4: Unhandled protocol " << packet.protocol();
         break;
     }
 }
 
-void handle_icmp(const EthernetFrameHeader& eth, const IPv4Packet& ipv4_packet)
+void handle_icmp(const EthernetFrameHeader& eth, const IPv4Packet& ipv4_packet, const timeval& packet_timestamp)
 {
     auto& icmp_header = *static_cast<const ICMPHeader*>(ipv4_packet.payload());
 #ifdef ICMP_DEBUG
@@ -263,7 +264,7 @@ void handle_icmp(const EthernetFrameHeader& eth, const IPv4Packet& ipv4_packet)
             LOCKER(socket->lock());
             if (socket->protocol() != (unsigned)IPv4Protocol::ICMP)
                 continue;
-            socket->did_receive(ipv4_packet.source(), 0, KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()));
+            socket->did_receive(ipv4_packet.source(), 0, KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()), packet_timestamp);
         }
     }
 
@@ -285,11 +286,12 @@ void handle_icmp(const EthernetFrameHeader& eth, const IPv4Packet& ipv4_packet)
             memcpy(response.payload(), request.payload(), icmp_payload_size);
         response.header.set_checksum(internet_checksum(&response, icmp_packet_size));
         // FIXME: What is the right TTL value here? Is 64 ok? Should we use the same TTL as the echo request?
-        adapter->send_ipv4(eth.source(), ipv4_packet.source(), IPv4Protocol::ICMP, buffer, 64);
+        auto response_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&response);
+        adapter->send_ipv4(eth.source(), ipv4_packet.source(), IPv4Protocol::ICMP, response_buffer, buffer.size(), 64);
     }
 }
 
-void handle_udp(const IPv4Packet& ipv4_packet)
+void handle_udp(const IPv4Packet& ipv4_packet, const timeval& packet_timestamp)
 {
     if (ipv4_packet.payload_size() < sizeof(UDPPacket)) {
         klog() << "handle_udp: Packet too small (" << ipv4_packet.payload_size() << ", need " << sizeof(UDPPacket) << ")";
@@ -315,10 +317,10 @@ void handle_udp(const IPv4Packet& ipv4_packet)
 
     ASSERT(socket->type() == SOCK_DGRAM);
     ASSERT(socket->local_port() == udp_packet.destination_port());
-    socket->did_receive(ipv4_packet.source(), udp_packet.source_port(), KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()));
+    socket->did_receive(ipv4_packet.source(), udp_packet.source_port(), KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()), packet_timestamp);
 }
 
-void handle_tcp(const IPv4Packet& ipv4_packet)
+void handle_tcp(const IPv4Packet& ipv4_packet, const timeval& packet_timestamp)
 {
     if (ipv4_packet.payload_size() < sizeof(TCPPacket)) {
         klog() << "handle_tcp: IPv4 payload is too small to be a TCP packet (" << ipv4_packet.payload_size() << ", need " << sizeof(TCPPacket) << ")";
@@ -379,7 +381,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
         return;
     case TCPSocket::State::TimeWait:
         klog() << "handle_tcp: unexpected flags in TimeWait state";
-        socket->send_tcp_packet(TCPFlags::RST);
+        (void)socket->send_tcp_packet(TCPFlags::RST);
         socket->set_state(TCPSocket::State::Closed);
         return;
     case TCPSocket::State::Listen:
@@ -400,46 +402,46 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
 #endif
             client->set_sequence_number(1000);
             client->set_ack_number(tcp_packet.sequence_number() + payload_size + 1);
-            client->send_tcp_packet(TCPFlags::SYN | TCPFlags::ACK);
+            (void)client->send_tcp_packet(TCPFlags::SYN | TCPFlags::ACK);
             client->set_state(TCPSocket::State::SynReceived);
             return;
         }
         default:
             klog() << "handle_tcp: unexpected flags in Listen state";
-            // socket->send_tcp_packet(TCPFlags::RST);
+            // (void)socket->send_tcp_packet(TCPFlags::RST);
             return;
         }
     case TCPSocket::State::SynSent:
         switch (tcp_packet.flags()) {
         case TCPFlags::SYN:
             socket->set_ack_number(tcp_packet.sequence_number() + payload_size + 1);
-            socket->send_tcp_packet(TCPFlags::ACK);
+            (void)socket->send_tcp_packet(TCPFlags::ACK);
             socket->set_state(TCPSocket::State::SynReceived);
             return;
         case TCPFlags::ACK | TCPFlags::SYN:
             socket->set_ack_number(tcp_packet.sequence_number() + payload_size + 1);
-            socket->send_tcp_packet(TCPFlags::ACK);
+            (void)socket->send_tcp_packet(TCPFlags::ACK);
             socket->set_state(TCPSocket::State::Established);
             socket->set_setup_state(Socket::SetupState::Completed);
             socket->set_connected(true);
             return;
         case TCPFlags::ACK | TCPFlags::FIN:
             socket->set_ack_number(tcp_packet.sequence_number() + payload_size + 1);
-            socket->send_tcp_packet(TCPFlags::ACK);
+            (void)socket->send_tcp_packet(TCPFlags::ACK);
             socket->set_state(TCPSocket::State::Closed);
             socket->set_error(TCPSocket::Error::FINDuringConnect);
             socket->set_setup_state(Socket::SetupState::Completed);
             return;
         case TCPFlags::ACK | TCPFlags::RST:
             socket->set_ack_number(tcp_packet.sequence_number() + payload_size);
-            socket->send_tcp_packet(TCPFlags::ACK);
+            (void)socket->send_tcp_packet(TCPFlags::ACK);
             socket->set_state(TCPSocket::State::Closed);
             socket->set_error(TCPSocket::Error::RSTDuringConnect);
             socket->set_setup_state(Socket::SetupState::Completed);
             return;
         default:
             klog() << "handle_tcp: unexpected flags in SynSent state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             socket->set_error(TCPSocket::Error::UnexpectedFlagsDuringConnect);
             socket->set_setup_state(Socket::SetupState::Completed);
@@ -454,7 +456,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
             case TCPSocket::Direction::Incoming:
                 if (!socket->has_originator()) {
                     klog() << "handle_tcp: connection doesn't have an originating socket; maybe it went away?";
-                    socket->send_tcp_packet(TCPFlags::RST);
+                    (void)socket->send_tcp_packet(TCPFlags::RST);
                     socket->set_state(TCPSocket::State::Closed);
                     return;
                 }
@@ -470,7 +472,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
                 return;
             default:
                 klog() << "handle_tcp: got ACK in SynReceived state but direction is invalid (" << TCPSocket::to_string(socket->direction()) << ")";
-                socket->send_tcp_packet(TCPFlags::RST);
+                (void)socket->send_tcp_packet(TCPFlags::RST);
                 socket->set_state(TCPSocket::State::Closed);
                 return;
             }
@@ -478,7 +480,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
             return;
         default:
             klog() << "handle_tcp: unexpected flags in SynReceived state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             return;
         }
@@ -486,7 +488,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
         switch (tcp_packet.flags()) {
         default:
             klog() << "handle_tcp: unexpected flags in CloseWait state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             return;
         }
@@ -498,7 +500,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
             return;
         default:
             klog() << "handle_tcp: unexpected flags in LastAck state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             return;
         }
@@ -514,7 +516,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
             return;
         default:
             klog() << "handle_tcp: unexpected flags in FinWait1 state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             return;
         }
@@ -529,7 +531,7 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
             return;
         default:
             klog() << "handle_tcp: unexpected flags in FinWait2 state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             return;
         }
@@ -541,17 +543,17 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
             return;
         default:
             klog() << "handle_tcp: unexpected flags in Closing state";
-            socket->send_tcp_packet(TCPFlags::RST);
+            (void)socket->send_tcp_packet(TCPFlags::RST);
             socket->set_state(TCPSocket::State::Closed);
             return;
         }
     case TCPSocket::State::Established:
         if (tcp_packet.has_fin()) {
             if (payload_size != 0)
-                socket->did_receive(ipv4_packet.source(), tcp_packet.source_port(), KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()));
+                socket->did_receive(ipv4_packet.source(), tcp_packet.source_port(), KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()), packet_timestamp);
 
             socket->set_ack_number(tcp_packet.sequence_number() + payload_size + 1);
-            socket->send_tcp_packet(TCPFlags::ACK);
+            (void)socket->send_tcp_packet(TCPFlags::ACK);
             socket->set_state(TCPSocket::State::CloseWait);
             socket->set_connected(false);
             return;
@@ -564,8 +566,8 @@ void handle_tcp(const IPv4Packet& ipv4_packet)
 #endif
 
         if (payload_size) {
-            if (socket->did_receive(ipv4_packet.source(), tcp_packet.source_port(), KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size())))
-                socket->send_tcp_packet(TCPFlags::ACK);
+            if (socket->did_receive(ipv4_packet.source(), tcp_packet.source_port(), KBuffer::copy(&ipv4_packet, sizeof(IPv4Packet) + ipv4_packet.payload_size()), packet_timestamp))
+                (void)socket->send_tcp_packet(TCPFlags::ACK);
         }
     }
 }

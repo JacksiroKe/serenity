@@ -125,14 +125,14 @@ public:
         return current_thread ? &current_thread->process() : nullptr;
     }
 
-    static NonnullRefPtr<Process> create_kernel_process(Thread*& first_thread, String&& name, void (*entry)(), u32 affinity = THREAD_AFFINITY_DEFAULT);
-    static RefPtr<Process> create_user_process(Thread*& first_thread, const String& path, uid_t, gid_t, ProcessID ppid, int& error, Vector<String>&& arguments = Vector<String>(), Vector<String>&& environment = Vector<String>(), TTY* = nullptr);
+    static NonnullRefPtr<Process> create_kernel_process(RefPtr<Thread>& first_thread, String&& name, void (*entry)(), u32 affinity = THREAD_AFFINITY_DEFAULT);
+    static RefPtr<Process> create_user_process(RefPtr<Thread>& first_thread, const String& path, uid_t, gid_t, ProcessID ppid, int& error, Vector<String>&& arguments = Vector<String>(), Vector<String>&& environment = Vector<String>(), TTY* = nullptr);
     ~Process();
 
     static Vector<ProcessID> all_pids();
     static AK::NonnullRefPtrVector<Process> all_processes();
 
-    Thread* create_kernel_thread(void (*entry)(), u32 priority, const String& name, u32 affinity = THREAD_AFFINITY_DEFAULT, bool joinable = true);
+    RefPtr<Thread> create_kernel_thread(void (*entry)(), u32 priority, const String& name, u32 affinity = THREAD_AFFINITY_DEFAULT, bool joinable = true);
 
     bool is_profiling() const { return m_profiling; }
     void set_profiling(bool profiling) { m_profiling = profiling; }
@@ -218,7 +218,7 @@ public:
     int sys$close(int fd);
     ssize_t sys$read(int fd, Userspace<u8*>, ssize_t);
     ssize_t sys$write(int fd, const u8*, ssize_t);
-    ssize_t sys$writev(int fd, const struct iovec* iov, int iov_count);
+    ssize_t sys$writev(int fd, Userspace<const struct iovec*> iov, int iov_count);
     int sys$fstat(int fd, Userspace<stat*>);
     int sys$stat(Userspace<const Syscall::SC_stat_params*>);
     int sys$lseek(int fd, off_t, int whence);
@@ -290,8 +290,8 @@ public:
     int sys$accept(int sockfd, Userspace<sockaddr*>, Userspace<socklen_t*>);
     int sys$connect(int sockfd, Userspace<const sockaddr*>, socklen_t);
     int sys$shutdown(int sockfd, int how);
-    ssize_t sys$sendto(Userspace<const Syscall::SC_sendto_params*>);
-    ssize_t sys$recvfrom(Userspace<const Syscall::SC_recvfrom_params*>);
+    ssize_t sys$sendmsg(int sockfd, Userspace<const struct msghdr*>, int flags);
+    ssize_t sys$recvmsg(int sockfd, Userspace<struct msghdr*>, int flags);
     int sys$getsockopt(Userspace<const Syscall::SC_getsockopt_params*>);
     int sys$setsockopt(Userspace<const Syscall::SC_setsockopt_params*>);
     int sys$getsockname(Userspace<const Syscall::SC_getsockname_params*>);
@@ -361,111 +361,6 @@ public:
 
     u32 m_ticks_in_user_for_dead_children { 0 };
     u32 m_ticks_in_kernel_for_dead_children { 0 };
-
-    [[nodiscard]] bool validate_read_from_kernel(VirtualAddress, size_t) const;
-
-    [[nodiscard]] bool validate_read(const void*, size_t) const;
-    [[nodiscard]] bool validate_write(void*, size_t) const;
-
-    template<typename T>
-    [[nodiscard]] bool validate_read(Userspace<T*> ptr, size_t size) const
-    {
-        return validate_read(ptr.unsafe_userspace_ptr(), size);
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_write(Userspace<T*> ptr, size_t size) const
-    {
-        return validate_write(ptr.unsafe_userspace_ptr(), size);
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_read_typed(T* value, size_t count = 1)
-    {
-        Checked size = sizeof(T);
-        size *= count;
-        if (size.has_overflow())
-            return false;
-        return validate_read(value, size.value());
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_read_typed(Userspace<T*> value, size_t count = 1)
-    {
-        Checked size = sizeof(T);
-        size *= count;
-        if (size.has_overflow())
-            return false;
-        return validate_read(value, size.value());
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_read_and_copy_typed(T* dest, const T* src)
-    {
-        bool validated = validate_read_typed(src);
-        if (validated) {
-            copy_from_user(dest, src);
-        }
-        return validated;
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_read_and_copy_typed(T* dest, Userspace<const T*> src)
-    {
-        bool validated = validate_read_typed(src);
-        if (validated) {
-            copy_from_user(dest, src);
-        }
-        return validated;
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_read_and_copy_typed(T* dest, Userspace<T*> src)
-    {
-        Userspace<const T*> const_src { src.ptr() };
-        return validate_read_and_copy_typed(dest, const_src);
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_write_typed(T* value, size_t count = 1)
-    {
-        Checked size = sizeof(T);
-        size *= count;
-        if (size.has_overflow())
-            return false;
-        return validate_write(value, size.value());
-    }
-
-    template<typename T>
-    [[nodiscard]] bool validate_write_typed(Userspace<T*> value, size_t count = 1)
-    {
-        Checked size = sizeof(T);
-        size *= count;
-        if (size.has_overflow())
-            return false;
-        return validate_write(value, size.value());
-    }
-
-    template<typename DataType, typename SizeType>
-    [[nodiscard]] bool validate(const Syscall::MutableBufferArgument<DataType, SizeType>& buffer)
-    {
-        return validate_write(buffer.data, buffer.size);
-    }
-
-    template<typename DataType, typename SizeType>
-    [[nodiscard]] bool validate(const Syscall::ImmutableBufferArgument<DataType, SizeType>& buffer)
-    {
-        return validate_read(buffer.data, buffer.size);
-    }
-
-    [[nodiscard]] String validate_and_copy_string_from_user(const char*, size_t) const;
-
-    [[nodiscard]] String validate_and_copy_string_from_user(Userspace<const char*> user_characters, size_t size) const
-    {
-        return validate_and_copy_string_from_user(user_characters.unsafe_userspace_ptr(), size);
-    }
-
-    [[nodiscard]] String validate_and_copy_string_from_user(const Syscall::StringArgument&) const;
 
     Custody& current_directory();
     Custody* executable()
@@ -571,7 +466,7 @@ private:
     friend class Scheduler;
     friend class Region;
 
-    Process(Thread*& first_thread, const String& name, uid_t, gid_t, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd = nullptr, RefPtr<Custody> executable = nullptr, TTY* = nullptr, Process* fork_parent = nullptr);
+    Process(RefPtr<Thread>& first_thread, const String& name, uid_t, gid_t, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd = nullptr, RefPtr<Custody> executable = nullptr, TTY* = nullptr, Process* fork_parent = nullptr);
     static ProcessID allocate_pid();
 
     Range allocate_range(VirtualAddress, size_t, size_t alignment = PAGE_SIZE);
@@ -582,7 +477,7 @@ private:
     void kill_all_threads();
 
     int do_exec(NonnullRefPtr<FileDescription> main_program_description, Vector<String> arguments, Vector<String> environment, RefPtr<FileDescription> interpreter_description, Thread*& new_main_thread, u32& prev_flags);
-    ssize_t do_write(FileDescription&, const u8*, int data_size);
+    ssize_t do_write(FileDescription&, const UserOrKernelBuffer&, size_t);
 
     KResultOr<NonnullRefPtr<FileDescription>> find_elf_interpreter_for_executable(const String& path, char (&first_page)[PAGE_SIZE], int nread, size_t file_size);
     Vector<AuxiliaryValue> generate_auxiliary_vector() const;
@@ -833,4 +728,9 @@ inline u32 Thread::effective_priority() const
         }                                                            \
     } while (0)
 
+}
+
+inline static String copy_string_from_user(const Kernel::Syscall::StringArgument& string)
+{
+    return copy_string_from_user(string.characters, string.length);
 }

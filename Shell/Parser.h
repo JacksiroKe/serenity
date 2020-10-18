@@ -33,6 +33,8 @@
 #include <AK/StringBuilder.h>
 #include <AK/Vector.h>
 
+namespace Shell {
+
 class Parser {
 public:
     Parser(StringView input)
@@ -42,9 +44,16 @@ public:
 
     RefPtr<AST::Node> parse();
 
+    struct SavedOffset {
+        size_t offset;
+        AST::Position::Line line;
+    };
+    SavedOffset save_offset() const;
+
 private:
     RefPtr<AST::Node> parse_toplevel();
     RefPtr<AST::Node> parse_sequence();
+    RefPtr<AST::Node> parse_function_decl();
     RefPtr<AST::Node> parse_and_logical_sequence();
     RefPtr<AST::Node> parse_or_logical_sequence();
     RefPtr<AST::Node> parse_variable_decls();
@@ -54,6 +63,9 @@ private:
     RefPtr<AST::Node> parse_for_loop();
     RefPtr<AST::Node> parse_if_expr();
     RefPtr<AST::Node> parse_subshell();
+    RefPtr<AST::Node> parse_match_expr();
+    AST::MatchEntry parse_match_entry();
+    RefPtr<AST::Node> parse_match_pattern();
     RefPtr<AST::Node> parse_redirection();
     RefPtr<AST::Node> parse_list_expression();
     RefPtr<AST::Node> parse_expression();
@@ -72,34 +84,55 @@ private:
     bool at_end() const { return m_input.length() <= m_offset; }
     char peek();
     char consume();
-    void putback();
     bool expect(char);
     bool expect(const StringView&);
+
+    void restore_to(size_t offset, AST::Position::Line line)
+    {
+        m_offset = offset;
+        m_line = move(line);
+    }
+
+    AST::Position::Line line() const { return m_line; }
 
     StringView consume_while(Function<bool(char)>);
 
     struct ScopedOffset {
-        ScopedOffset(Vector<size_t>& offsets, size_t offset)
+        ScopedOffset(Vector<size_t>& offsets, Vector<AST::Position::Line>& lines, size_t offset, size_t lineno, size_t linecol)
             : offsets(offsets)
+            , lines(lines)
             , offset(offset)
+            , line({ lineno, linecol })
         {
             offsets.append(offset);
+            lines.append(line);
         }
         ~ScopedOffset()
         {
             auto last = offsets.take_last();
             ASSERT(last == offset);
+
+            auto last_line = lines.take_last();
+            ASSERT(last_line == line);
         }
 
         Vector<size_t>& offsets;
+        Vector<AST::Position::Line>& lines;
         size_t offset;
+        AST::Position::Line line;
     };
+
+    void restore_to(const ScopedOffset& offset) { restore_to(offset.offset, offset.line); }
 
     OwnPtr<ScopedOffset> push_start();
 
     StringView m_input;
     size_t m_offset { 0 };
+
+    AST::Position::Line m_line { 0, 0 };
+
     Vector<size_t> m_rule_start_offsets;
+    Vector<AST::Position::Line> m_rule_start_lines;
 };
 
 #if 0
@@ -109,7 +142,10 @@ toplevel :: sequence?
 sequence :: variable_decls? or_logical_sequence terminator sequence
           | variable_decls? or_logical_sequence '&' sequence
           | variable_decls? or_logical_sequence
+          | variable_decls? function_decl (terminator sequence)?
           | variable_decls? terminator sequence
+
+function_decl :: identifier '(' (ws* identifier)* ')' ws* '{' toplevel '}'
 
 or_logical_sequence :: and_logical_sequence '|' '|' and_logical_sequence
                      | and_logical_sequence
@@ -131,6 +167,7 @@ pipe_sequence :: command '|' pipe_sequence
 control_structure :: for_expr
                    | if_expr
                    | subshell
+                   | match_expr
 
 for_expr :: 'for' ws+ (identifier ' '+ 'in' ws*)? expression ws+ '{' toplevel '}'
 
@@ -140,6 +177,12 @@ else_clause :: else '{' toplevel '}'
              | else if_expr
 
 subshell :: '{' toplevel '}'
+
+match_expr :: 'match' ws+ expression ws* ('as' ws+ identifier)? '{' match_entry* '}'
+
+match_entry :: match_pattern ws* '{' toplevel '}'
+
+match_pattern :: expression (ws* '|' ws* expression)*
 
 command :: redirection command
          | list_expression command?
@@ -153,7 +196,7 @@ list_expression :: ' '* expression (' '+ list_expression)?
 
 expression :: evaluate expression?
             | string_composite expression?
-            | comment expession?
+            | comment expression?
             | '(' list_expression ')' expression?
 
 evaluate :: '$' '(' pipe_sequence ')'
@@ -191,3 +234,5 @@ glob :: [*?] bareword?
       | bareword [*?]
 )";
 #endif
+
+}

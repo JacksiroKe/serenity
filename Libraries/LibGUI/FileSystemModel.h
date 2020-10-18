@@ -73,6 +73,7 @@ public:
         gid_t gid { 0 };
         ino_t inode { 0 };
         time_t mtime { 0 };
+        bool is_accessible_directory { false };
 
         size_t total_size { 0 };
 
@@ -109,6 +110,7 @@ public:
         RefPtr<Core::Notifier> m_notifier;
 
         int m_error { 0 };
+        bool m_parent_of_root { false };
 
         ModelIndex index(int column) const;
         void traverse_if_needed();
@@ -147,6 +149,8 @@ public:
     virtual StringView drag_data_type() const override { return "text/uri-list"; }
     virtual bool accepts_drag(const ModelIndex&, const StringView& data_type) override;
     virtual bool is_column_sortable(int column_index) const override { return column_index != Column::Icon; }
+    virtual bool is_editable(const ModelIndex&) const override;
+    virtual void set_data(const ModelIndex&, const Variant&) override;
 
     static String timestamp_string(time_t timestamp)
     {

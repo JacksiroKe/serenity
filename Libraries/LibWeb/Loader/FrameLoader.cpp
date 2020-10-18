@@ -31,11 +31,14 @@
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/Text.h>
+#include <LibWeb/HTML/HTMLIFrameElement.h>
 #include <LibWeb/HTML/Parser/HTMLDocumentParser.h>
 #include <LibWeb/Loader/FrameLoader.h>
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/Page/Frame.h>
 #include <LibWeb/Page/Page.h>
+
+//#define GEMINI_DEBUG 1
 
 namespace Web {
 
@@ -114,9 +117,16 @@ static RefPtr<DOM::Document> create_image_document(const ByteBuffer& data, const
 
 static RefPtr<DOM::Document> create_gemini_document(const ByteBuffer& data, const URL& url)
 {
-    auto markdown_document = Gemini::Document::parse({ (const char*)data.data(), data.size() }, url);
+    StringView gemini_data { data };
+    auto gemini_document = Gemini::Document::parse(gemini_data, url);
+    String html_data = gemini_document->render_to_html();
 
-    return HTML::parse_html_document(markdown_document->render_to_html(), url, "utf-8");
+#ifdef GEMINI_DEBUG
+    dbgln("Gemini data:\n\"\"\"{}\"\"\"", gemini_data);
+    dbgln("Converted to HTML:\n\"\"\"{}\"\"\"", html_data);
+#endif
+
+    return HTML::parse_html_document(move(html_data), url, "utf-8");
 }
 
 RefPtr<DOM::Document> FrameLoader::create_document_from_mime_type(const ByteBuffer& data, const URL& url, const String& mime_type, const String& encoding)
@@ -138,17 +148,15 @@ RefPtr<DOM::Document> FrameLoader::create_document_from_mime_type(const ByteBuff
     return nullptr;
 }
 
-bool FrameLoader::load(const URL& url, Type type)
+bool FrameLoader::load(const LoadRequest& request, Type type)
 {
-    dbg() << "FrameLoader::load: " << url;
-
-    if (!url.is_valid()) {
-        load_error_page(url, "Invalid URL");
+    if (!request.is_valid()) {
+        load_error_page(request.url(), "Invalid request");
         return false;
     }
 
-    LoadRequest request;
-    request.set_url(url);
+    auto& url = request.url();
+
     set_resource(ResourceLoader::the().load_resource(Resource::Type::Generic, request));
 
     if (type == Type::Navigation)
@@ -179,6 +187,28 @@ bool FrameLoader::load(const URL& url, Type type)
     return true;
 }
 
+bool FrameLoader::load(const URL& url, Type type)
+{
+    dbg() << "FrameLoader::load: " << url;
+
+    if (!url.is_valid()) {
+        load_error_page(url, "Invalid URL");
+        return false;
+    }
+
+    LoadRequest request;
+    request.set_url(url);
+
+    return load(request, type);
+}
+
+void FrameLoader::load_html(const StringView& html, const URL& url)
+{
+    HTML::HTMLDocumentParser parser(html, "utf-8");
+    parser.run(url);
+    frame().set_document(&parser.document());
+}
+
 void FrameLoader::load_error_page(const URL& failed_url, const String& error)
 {
     auto error_page_url = "file:///res/html/error.html";
@@ -193,7 +223,6 @@ void FrameLoader::load_error_page(const URL& failed_url, const String& error)
             auto document = HTML::parse_html_document(html, failed_url, "utf-8");
             ASSERT(document);
             frame().set_document(document);
-            frame().page().client().page_did_change_title(document->title());
         },
         [](auto error) {
             dbg() << "Failed to load error page: " << error;
@@ -226,10 +255,15 @@ void FrameLoader::resource_did_load()
     }
 
     frame().set_document(document);
-    frame().page().client().page_did_change_title(document->title());
 
     if (!url.fragment().is_empty())
         frame().scroll_to_anchor(url.fragment());
+
+    if (auto* host_element = frame().host_element()) {
+        // FIXME: Perhaps in the future we'll have a better common base class for <frame> and <iframe>
+        ASSERT(is<HTML::HTMLIFrameElement>(*host_element));
+        downcast<HTML::HTMLIFrameElement>(*host_element).content_frame_did_load({});
+    }
 }
 
 void FrameLoader::resource_did_fail()

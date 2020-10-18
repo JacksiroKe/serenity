@@ -26,11 +26,12 @@
 
 #include "Emulator.h"
 #include "SoftCPU.h"
+#include <AK/Format.h>
 #include <AK/LexicalPath.h>
-#include <AK/LogStream.h>
 #include <AK/MappedFile.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ArgsParser.h>
+#include <LibCore/DirIterator.h>
 #include <LibELF/Loader.h>
 #include <getopt.h>
 #include <pthread.h>
@@ -38,25 +39,25 @@
 
 int main(int argc, char** argv, char** env)
 {
-    if (argc == 1) {
-        out() << "usage: UserspaceEmulator <command>";
-        return 0;
-    }
+    Vector<const char*> command;
 
-    // FIXME: Allow specifying any command in $PATH instead of requiring a full executable path.
-    const char* executable_path = argv[1];
+    Core::ArgsParser parser;
+    parser.add_positional_argument(command, "Command to emulate", "command");
+    parser.parse(argc, argv);
+
+    auto executable_path = Core::find_executable_in_path(command[0]);
 
     MappedFile mapped_file(executable_path);
     if (!mapped_file.is_valid()) {
-        warn() << "Unable to map " << executable_path;
+        warnln("Unable to map {}", executable_path);
         return 1;
     }
 
     auto elf = ELF::Loader::create((const u8*)mapped_file.data(), mapped_file.size());
 
     Vector<String> arguments;
-    for (int i = 1; i < argc; ++i) {
-        arguments.append(argv[i]);
+    for (auto arg : command) {
+        arguments.append(arg);
     }
 
     Vector<String> environment;
@@ -77,7 +78,7 @@ int main(int argc, char** argv, char** env)
     }
     int rc = pthread_setname_np(pthread_self(), builder.to_string().characters());
     if (rc != 0) {
-        fprintf(stderr, "pthread_setname_np: %s\n", strerror(rc));
+        warnln("pthread_setname_np: {}", strerror(rc));
         return 1;
     }
     return emulator.exec();

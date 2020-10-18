@@ -31,7 +31,6 @@
 namespace AK {
 
 class Bitmap;
-class BufferStream;
 class ByteBuffer;
 class DebugLogStream;
 class IPv4Address;
@@ -62,7 +61,7 @@ template<typename T>
 class Span;
 
 template<typename T, size_t Size>
-class Array;
+struct Array;
 
 template<typename Container, typename ValueType>
 class SimpleIterator;
@@ -130,7 +129,6 @@ using AK::Array;
 using AK::Atomic;
 using AK::Badge;
 using AK::Bitmap;
-using AK::BufferStream;
 using AK::ByteBuffer;
 using AK::Bytes;
 using AK::CircularDuplexStream;

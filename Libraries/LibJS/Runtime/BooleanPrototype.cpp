@@ -25,7 +25,6 @@
  */
 
 #include <AK/Function.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/BooleanPrototype.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
@@ -39,9 +38,10 @@ BooleanPrototype::BooleanPrototype(GlobalObject& global_object)
 
 void BooleanPrototype::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     BooleanObject::initialize(global_object);
-    define_native_function("toString", to_string, 0, Attribute::Writable | Attribute::Configurable);
-    define_native_function("valueOf", value_of, 0, Attribute::Writable | Attribute::Configurable);
+    define_native_function(vm.names.toString, to_string, 0, Attribute::Writable | Attribute::Configurable);
+    define_native_function(vm.names.valueOf, value_of, 0, Attribute::Writable | Attribute::Configurable);
 }
 
 BooleanPrototype::~BooleanPrototype()
@@ -50,27 +50,27 @@ BooleanPrototype::~BooleanPrototype()
 
 JS_DEFINE_NATIVE_FUNCTION(BooleanPrototype::to_string)
 {
-    auto this_object = interpreter.this_value(global_object);
+    auto this_object = vm.this_value(global_object);
     if (this_object.is_boolean()) {
-        return js_string(interpreter.heap(), this_object.as_bool() ? "true" : "false");
+        return js_string(vm, this_object.as_bool() ? "true" : "false");
     }
     if (!this_object.is_object() || !this_object.as_object().is_boolean_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Boolean");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Boolean");
         return {};
     }
 
     bool bool_value = static_cast<BooleanObject&>(this_object.as_object()).value_of().as_bool();
-    return js_string(interpreter.heap(), bool_value ? "true" : "false");
+    return js_string(vm, bool_value ? "true" : "false");
 }
 
 JS_DEFINE_NATIVE_FUNCTION(BooleanPrototype::value_of)
 {
-    auto this_object = interpreter.this_value(global_object);
+    auto this_object = vm.this_value(global_object);
     if (this_object.is_boolean()) {
         return this_object;
     }
     if (!this_object.is_object() || !this_object.as_object().is_boolean_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Boolean");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Boolean");
         return {};
     }
 

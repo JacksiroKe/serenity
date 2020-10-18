@@ -30,11 +30,11 @@
 
 class ManualSectionNode : public ManualNode {
 public:
-    virtual ~ManualSectionNode() override {}
+    virtual ~ManualSectionNode() override { }
 
     ManualSectionNode(String section, String name)
         : m_section(section)
-        , m_full_name(String::format("%s. %s", section.characters(), name.characters()))
+        , m_full_name(String::formatted("{}. {}", section, name))
     {
     }
 

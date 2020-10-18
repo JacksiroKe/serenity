@@ -105,7 +105,7 @@ private:
 static RefPtr<SearchResultsModel> find_in_files(const StringView& text)
 {
     Vector<Match> matches;
-    g_project->for_each_text_file([&](auto& file) {
+    project().for_each_text_file([&](auto& file) {
         auto matches_in_file = file.document().find_all(text);
         for (auto& range : matches_in_file) {
             auto whole_line_range = file.document().range_for_entire_line(range.start().line());

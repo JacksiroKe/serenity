@@ -31,6 +31,7 @@
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/HTMLAnchorElement.h>
 #include <LibWeb/HTML/HTMLIFrameElement.h>
+#include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Layout/LayoutDocument.h>
 #include <LibWeb/Page/EventHandler.h>
@@ -87,12 +88,17 @@ bool EventHandler::handle_mouseup(const Gfx::IntPoint& position, unsigned button
 
     if (result.layout_node && result.layout_node->wants_mouse_events()) {
         result.layout_node->handle_mouseup({}, position, button, modifiers);
+
+        // Things may have changed as a consequence of LayoutNode::handle_mouseup(). Hit test again.
+        if (!layout_root())
+            return true;
+        result = layout_root()->hit_test(position, HitTestType::Exact);
     }
 
     if (result.layout_node && result.layout_node->node()) {
         RefPtr<DOM::Node> node = result.layout_node->node();
         if (is<HTML::HTMLIFrameElement>(*node)) {
-            if (auto* subframe = downcast<HTML::HTMLIFrameElement>(*node).hosted_frame())
+            if (auto* subframe = downcast<HTML::HTMLIFrameElement>(*node).content_frame())
                 return subframe->event_handler().handle_mouseup(position.translated(compute_mouse_event_offset({}, *result.layout_node)), button, modifiers);
             return false;
         }
@@ -125,18 +131,19 @@ bool EventHandler::handle_mousedown(const Gfx::IntPoint& position, unsigned butt
     if (!result.layout_node)
         return false;
 
+    RefPtr<DOM::Node> node = result.layout_node->node();
+    document->set_hovered_node(node);
+
     if (result.layout_node->wants_mouse_events()) {
         result.layout_node->handle_mousedown({}, position, button, modifiers);
         return true;
     }
 
-    RefPtr<DOM::Node> node = result.layout_node->node();
-    document->set_hovered_node(node);
     if (!node)
         return false;
 
     if (is<HTML::HTMLIFrameElement>(*node)) {
-        if (auto* subframe = downcast<HTML::HTMLIFrameElement>(*node).hosted_frame())
+        if (auto* subframe = downcast<HTML::HTMLIFrameElement>(*node).content_frame())
             return subframe->event_handler().handle_mousedown(position.translated(compute_mouse_event_offset({}, *result.layout_node)), button, modifiers);
         return false;
     }
@@ -147,6 +154,13 @@ bool EventHandler::handle_mousedown(const Gfx::IntPoint& position, unsigned butt
     node->dispatch_event(UIEvents::MouseEvent::create("mousedown", offset.x(), offset.y()));
     if (!layout_root())
         return true;
+
+    if (button == GUI::MouseButton::Right && is<HTML::HTMLImageElement>(*node)) {
+        auto& image_element = downcast<HTML::HTMLImageElement>(*node);
+        auto image_url = image_element.document().complete_url(image_element.src());
+        page_client.page_did_request_image_context_menu(m_frame.to_main_frame_position(position), image_url, "", modifiers, image_element.bitmap());
+        return true;
+    }
 
     if (RefPtr<HTML::HTMLAnchorElement> link = node->enclosing_link_element()) {
         auto href = link->href();
@@ -210,6 +224,7 @@ bool EventHandler::handle_mousemove(const Gfx::IntPoint& position, unsigned butt
     if (result.layout_node) {
 
         if (result.layout_node->wants_mouse_events()) {
+            document.set_hovered_node(result.layout_node->node());
             result.layout_node->handle_mousemove({}, position, buttons, modifiers);
             // FIXME: It feels a bit aggressive to always update the cursor like this.
             page_client.page_did_request_cursor_change(Gfx::StandardCursor::None);
@@ -219,7 +234,7 @@ bool EventHandler::handle_mousemove(const Gfx::IntPoint& position, unsigned butt
         RefPtr<DOM::Node> node = result.layout_node->node();
 
         if (node && is<HTML::HTMLIFrameElement>(*node)) {
-            if (auto* subframe = downcast<HTML::HTMLIFrameElement>(*node).hosted_frame())
+            if (auto* subframe = downcast<HTML::HTMLIFrameElement>(*node).content_frame())
                 return subframe->event_handler().handle_mousemove(position.translated(compute_mouse_event_offset({}, *result.layout_node)), buttons, modifiers);
             return false;
         }

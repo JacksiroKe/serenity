@@ -68,6 +68,7 @@ ALWAYS_INLINE Color get_pixel(const Gfx::Bitmap& bitmap, int x, int y)
 Painter::Painter(Gfx::Bitmap& bitmap)
     : m_target(bitmap)
 {
+    ASSERT(bitmap.format() == Gfx::BitmapFormat::RGB32 || bitmap.format() == Gfx::BitmapFormat::RGBA32);
     m_state_stack.append(State());
     state().font = &Font::default_font();
     state().clip_rect = { { 0, 0 }, bitmap.size() };
@@ -904,6 +905,11 @@ void Painter::draw_text_line(const IntRect& a_rect, const Utf8View& text, const 
     }
     default:
         ASSERT_NOT_REACHED();
+    }
+
+    if (is_vertically_centered_text_alignment(alignment)) {
+        int distance_from_baseline_to_bottom = (font.glyph_height() - 1) - font.baseline();
+        rect.move_by(0, distance_from_baseline_to_bottom / 2);
     }
 
     auto point = rect.location();

@@ -59,8 +59,6 @@ public:
     int spacing() const { return m_spacing; }
     void set_spacing(int);
 
-    virtual void save_to(JsonObject&) override;
-
 protected:
     Layout();
 

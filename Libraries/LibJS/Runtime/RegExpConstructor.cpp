@@ -24,7 +24,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/RegExpConstructor.h>
@@ -33,35 +32,37 @@
 namespace JS {
 
 RegExpConstructor::RegExpConstructor(GlobalObject& global_object)
-    : NativeFunction("RegExp", *global_object.function_prototype())
+    : NativeFunction(vm().names.RegExp, *global_object.function_prototype())
 {
 }
 
 void RegExpConstructor::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property("prototype", global_object.regexp_prototype(), 0);
-    define_property("length", Value(2), Attribute::Configurable);
+    define_property(vm.names.prototype, global_object.regexp_prototype(), 0);
+    define_property(vm.names.length, Value(2), Attribute::Configurable);
 }
 
 RegExpConstructor::~RegExpConstructor()
 {
 }
 
-Value RegExpConstructor::call(Interpreter& interpreter)
+Value RegExpConstructor::call()
 {
-    return construct(interpreter, *this);
+    return construct(*this);
 }
 
-Value RegExpConstructor::construct(Interpreter& interpreter, Function&)
+Value RegExpConstructor::construct(Function&)
 {
-    if (!interpreter.argument_count())
+    auto& vm = this->vm();
+    if (!vm.argument_count())
         return RegExpObject::create(global_object(), "(?:)", "");
-    auto contents = interpreter.argument(0).to_string(interpreter);
-    if (interpreter.exception())
+    auto contents = vm.argument(0).to_string(global_object());
+    if (vm.exception())
         return {};
-    auto flags = interpreter.argument_count() > 1 ? interpreter.argument(1).to_string(interpreter) : "";
-    if (interpreter.exception())
+    auto flags = vm.argument_count() > 1 ? vm.argument(1).to_string(global_object()) : "";
+    if (vm.exception())
         return {};
     return RegExpObject::create(global_object(), contents, flags);
 }

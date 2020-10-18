@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <AK/Format.h>
 #include <LibGfx/Orientation.h>
 #include <LibGfx/Point.h>
 #include <LibGfx/Size.h>
@@ -127,12 +128,28 @@ public:
         set_height(height() + h);
     }
 
+    void inflate(const Size<T>& size)
+    {
+        set_x(x() - size.width() / 2);
+        set_width(width() + size.width());
+        set_y(y() - size.height() / 2);
+        set_height(height() + size.height());
+    }
+
     void shrink(T w, T h)
     {
         set_x(x() + w / 2);
         set_width(width() - w);
         set_y(y() + h / 2);
         set_height(height() - h);
+    }
+
+    void shrink(const Size<T>& size)
+    {
+        set_x(x() + size.width() / 2);
+        set_width(width() - size.width());
+        set_y(y() + size.height() / 2);
+        set_height(height() - size.height());
     }
 
     Rect<T> shrunken(T w, T h) const
@@ -142,10 +159,24 @@ public:
         return rect;
     }
 
+    Rect<T> shrunken(const Size<T>& size) const
+    {
+        Rect<T> rect = *this;
+        rect.shrink(size);
+        return rect;
+    }
+
     Rect<T> inflated(T w, T h) const
     {
         Rect<T> rect = *this;
         rect.inflate(w, h);
+        return rect;
+    }
+
+    Rect<T> inflated(const Size<T>& size) const
+    {
+        Rect<T> rect = *this;
+        rect.inflate(size);
         return rect;
     }
 
@@ -408,6 +439,18 @@ ALWAYS_INLINE IntRect enclosing_int_rect(const FloatRect& float_rect)
         (int)ceilf(float_rect.height()),
     };
 }
+
+}
+
+namespace AK {
+
+template<typename T>
+struct Formatter<Gfx::Rect<T>> : Formatter<StringView> {
+    void format(TypeErasedFormatParams& params, FormatBuilder& builder, const Gfx::Rect<T>& value)
+    {
+        Formatter<StringView>::format(params, builder, value.to_string());
+    }
+};
 
 }
 

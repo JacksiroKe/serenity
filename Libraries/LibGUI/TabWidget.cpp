@@ -24,6 +24,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <AK/JsonObject.h>
+#include <AK/JsonValue.h>
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/TabWidget.h>
@@ -32,10 +34,26 @@
 #include <LibGfx/Palette.h>
 #include <LibGfx/StylePainter.h>
 
+REGISTER_WIDGET(GUI, TabWidget)
+
 namespace GUI {
 
 TabWidget::TabWidget()
 {
+    REGISTER_INT_PROPERTY("container_padding", container_padding, set_container_padding);
+    REGISTER_BOOL_PROPERTY("uniform_tabs", uniform_tabs, set_uniform_tabs);
+
+    register_property(
+        "text_alignment",
+        [this] { return Gfx::to_string(text_alignment()); },
+        [this](auto& value) {
+            auto alignment = Gfx::text_alignment_from_string(value.to_string());
+            if (alignment.has_value()) {
+                set_text_alignment(alignment.value());
+                return true;
+            }
+            return false;
+        });
 }
 
 TabWidget::~TabWidget()

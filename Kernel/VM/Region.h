@@ -79,6 +79,7 @@ public:
     unsigned access() const { return m_access; }
 
     void set_name(const String& name) { m_name = name; }
+    void set_name(String&& name) { m_name = move(name); }
 
     const VMObject& vmobject() const { return *m_vmobject; }
     VMObject& vmobject() { return *m_vmobject; }
@@ -117,7 +118,7 @@ public:
     {
         return (vaddr - m_range.base()).get() / PAGE_SIZE;
     }
-    
+
     VirtualAddress vaddr_from_page_index(size_t page_index) const
     {
         return vaddr().offset(page_index * PAGE_SIZE);
@@ -236,6 +237,5 @@ inline unsigned prot_to_region_access_flags(int prot)
         access |= Region::Access::Execute;
     return access;
 }
-
 
 }

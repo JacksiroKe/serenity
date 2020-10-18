@@ -176,6 +176,7 @@ set(KERNEL_SOURCES
     Time/RTC.cpp
     Time/TimeManagement.cpp
     TimerQueue.cpp
+    UserOrKernelBuffer.cpp
     VM/AnonymousVMObject.cpp
     VM/ContiguousVMObject.cpp
     VM/InodeVMObject.cpp
@@ -208,6 +209,7 @@ set(AK_SOURCES
     ../AK/StringUtils.cpp
     ../AK/StringView.cpp
     ../AK/Time.cpp
+    ../AK/Format.cpp
 )
 
 set(ELF_SOURCES
@@ -221,7 +223,6 @@ set(VT_SOURCES
     ../Libraries/LibVT/Line.cpp
 )
 
-
 set(KEYBOARD_SOURCES
     ../Libraries/LibKeyboard/CharacterMap.cpp
 )
@@ -231,6 +232,10 @@ set(CRYPTO_SOURCES
     ../Libraries/LibCrypto/Hash/SHA2.cpp
 )
 
+set(C_SOURCES
+    ../Libraries/LibC/ctype.cpp
+)
+
 set(SOURCES
     ${KERNEL_SOURCES}
     ${AK_SOURCES}
@@ -238,6 +243,7 @@ set(SOURCES
     ${VT_SOURCES}
     ${KEYBOARD_SOURCES}
     ${CRYPTO_SOURCES}
+    ${C_SOURCES}
 )
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-warning-option -DKERNEL")
@@ -253,11 +259,11 @@ add_library(kernel_heap STATIC ${KERNEL_HEAP_SOURCES})
 file(GENERATE OUTPUT linker.ld INPUT linker.ld)
 
 if (${CMAKE_HOST_SYSTEM_NAME} MATCHES SerenityOS)
-    include_directories(/usr/local/include/c++/10.1.0/)
-    include_directories(/usr/local/include/c++/10.1.0/i686-pc-serenity/)
+    include_directories(/usr/local/include/c++/10.2.0/)
+    include_directories(/usr/local/include/c++/10.2.0/i686-pc-serenity/)
 else()
-    include_directories(../Toolchain/Local/i686-pc-serenity/include/c++/10.1.0/)
-    include_directories(../Toolchain/Local/i686-pc-serenity/include/c++/10.1.0/i686-pc-serenity/)
+    include_directories(../Toolchain/Local/i686-pc-serenity/include/c++/10.2.0/)
+    include_directories(../Toolchain/Local/i686-pc-serenity/include/c++/10.2.0/i686-pc-serenity/)
 endif()
 
 add_executable(Kernel ${SOURCES})

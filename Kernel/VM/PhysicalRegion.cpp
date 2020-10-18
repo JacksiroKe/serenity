@@ -95,22 +95,25 @@ Optional<unsigned> PhysicalRegion::find_one_free_page()
         // We know we don't have any free pages, no need to check the bitmap
         // Check if we can draw one from the return queue
         if (m_recently_returned.size() > 0) {
-           u8 index = get_fast_random<u8>() % m_recently_returned.size();
-           ptrdiff_t local_offset = m_recently_returned[index].get() - m_lower.get();
-           m_recently_returned.remove(index);
-           ASSERT(local_offset >= 0);
-           ASSERT((FlatPtr)local_offset < (FlatPtr)(m_pages * PAGE_SIZE));
-           return local_offset / PAGE_SIZE;
+            u8 index = get_fast_random<u8>() % m_recently_returned.size();
+            ptrdiff_t local_offset = m_recently_returned[index].get() - m_lower.get();
+            m_recently_returned.remove(index);
+            ASSERT(local_offset >= 0);
+            ASSERT((FlatPtr)local_offset < (FlatPtr)(m_pages * PAGE_SIZE));
+            return local_offset / PAGE_SIZE;
         }
         return {};
     }
     auto free_index = m_bitmap.find_one_anywhere_unset(m_free_hint);
-    ASSERT(free_index.has_value());
-  
+    if (!free_index.has_value())
+        return {};
+
     auto page_index = free_index.value();
     m_bitmap.set(page_index, true);
     m_used++;
     m_free_hint = free_index.value() + 1; // Just a guess
+    if (m_free_hint >= m_bitmap.size())
+        m_free_hint = 0;
     return page_index;
 }
 
@@ -127,6 +130,8 @@ Optional<unsigned> PhysicalRegion::find_and_allocate_contiguous_range(size_t cou
         m_bitmap.set_range<true>(page, count);
         m_used += count;
         m_free_hint = first_index.value() + count + 1; // Just a guess
+        if (m_free_hint >= m_bitmap.size())
+            m_free_hint = 0;
         return page;
     }
     return {};

@@ -290,7 +290,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (namespace_.is_one_of("DOM", "HTML", "UIEvents")) {
+    if (namespace_.is_one_of("DOM", "HTML", "UIEvents", "HighResolutionTime", "SVG")) {
         StringBuilder builder;
         builder.append(namespace_);
         builder.append("::");
@@ -379,6 +379,10 @@ static void generate_header(const IDL::Interface& interface)
     out() << "#include <LibWeb/HTML/" << interface.name << ".h>";
     out() << "#elif __has_include(<LibWeb/UIEvents/" << interface.name << ".h>)";
     out() << "#include <LibWeb/UIEvents/" << interface.name << ".h>";
+    out() << "#elif __has_include(<LibWeb/HighResolutionTime/" << interface.name << ".h>)";
+    out() << "#include <LibWeb/HighResolutionTime/" << interface.name << ".h>";
+    out() << "#elif __has_include(<LibWeb/SVG/" << interface.name << ".h>)";
+    out() << "#include <LibWeb/SVG/" << interface.name << ".h>";
     out() << "#endif";
 
     if (wrapper_base_class != "Wrapper")
@@ -435,7 +439,6 @@ void generate_implementation(const IDL::Interface& interface)
     auto& wrapper_base_class = interface.wrapper_base_class;
 
     out() << "#include <AK/FlyString.h>";
-    out() << "#include <LibJS/Interpreter.h>";
     out() << "#include <LibJS/Runtime/Array.h>";
     out() << "#include <LibJS/Runtime/Value.h>";
     out() << "#include <LibJS/Runtime/GlobalObject.h>";
@@ -445,8 +448,9 @@ void generate_implementation(const IDL::Interface& interface)
     out() << "#include <LibWeb/Bindings/NodeWrapperFactory.h>";
     out() << "#include <LibWeb/Bindings/" << wrapper_class << ".h>";
     out() << "#include <LibWeb/DOM/Element.h>";
-    out() << "#include <LibWeb/HTML/HTMLElement.h>";
     out() << "#include <LibWeb/DOM/EventListener.h>";
+    out() << "#include <LibWeb/HTML/HTMLElement.h>";
+    out() << "#include <LibWeb/Origin.h>";
     out() << "#include <LibWeb/Bindings/CommentWrapper.h>";
     out() << "#include <LibWeb/Bindings/DocumentWrapper.h>";
     out() << "#include <LibWeb/Bindings/DocumentFragmentWrapper.h>";
@@ -457,6 +461,7 @@ void generate_implementation(const IDL::Interface& interface)
     out() << "#include <LibWeb/Bindings/ImageDataWrapper.h>";
     out() << "#include <LibWeb/Bindings/TextWrapper.h>";
     out() << "#include <LibWeb/Bindings/CanvasRenderingContext2DWrapper.h>";
+    out() << "#include <LibWeb/Bindings/WindowObject.h>";
 
     // FIXME: This is a total hack until we can figure out the namespace for a given type somehow.
     out() << "using namespace Web::DOM;";
@@ -498,13 +503,13 @@ void generate_implementation(const IDL::Interface& interface)
 
     // Implementation: impl_from()
     if (!interface.attributes.is_empty() || !interface.functions.is_empty()) {
-        out() << "static " << interface.fully_qualified_name << "* impl_from(JS::Interpreter& interpreter, JS::GlobalObject& global_object)";
+        out() << "static " << interface.fully_qualified_name << "* impl_from(JS::VM& vm, JS::GlobalObject& global_object)";
         out() << "{";
-        out() << "    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);";
+        out() << "    auto* this_object = vm.this_value(global_object).to_object(global_object);";
         out() << "    if (!this_object)";
         out() << "        return {};";
         out() << "    if (!this_object->inherits(\"" << wrapper_class << "\")) {";
-        out() << "        interpreter.throw_exception<JS::TypeError>(JS::ErrorType::NotA, \"" << interface.fully_qualified_name << "\");";
+        out() << "        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, \"" << interface.fully_qualified_name << "\");";
         out() << "        return nullptr;";
         out() << "    }";
         out() << "    return &static_cast<" << wrapper_class << "*>(this_object)->impl();";
@@ -519,27 +524,27 @@ void generate_implementation(const IDL::Interface& interface)
                 out() << "        return {};";
         };
         if (parameter.type.name == "DOMString") {
-            out() << "    auto " << cpp_name << " = " << js_name << js_suffix << ".to_string(interpreter);";
-            out() << "    if (interpreter.exception())";
+            out() << "    auto " << cpp_name << " = " << js_name << js_suffix << ".to_string(global_object);";
+            out() << "    if (vm.exception())";
             generate_return();
         } else if (parameter.type.name == "EventListener") {
             out() << "    if (!" << js_name << js_suffix << ".is_function()) {";
-            out() << "        interpreter.throw_exception<JS::TypeError>(JS::ErrorType::NotA, \"Function\");";
+            out() << "        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, \"Function\");";
             generate_return();
             out() << "    }";
             out() << "    auto " << cpp_name << " = adopt(*new EventListener(JS::make_handle(&" << js_name << js_suffix << ".as_function())));";
         } else if (is_wrappable_type(parameter.type)) {
-            out() << "    auto " << cpp_name << "_object = " << js_name << js_suffix << ".to_object(interpreter, global_object);";
-            out() << "    if (interpreter.exception())";
+            out() << "    auto " << cpp_name << "_object = " << js_name << js_suffix << ".to_object(global_object);";
+            out() << "    if (vm.exception())";
             generate_return();
             out() << "    if (!" << cpp_name << "_object->inherits(\"" << parameter.type.name << "Wrapper\")) {";
-            out() << "        interpreter.throw_exception<JS::TypeError>(JS::ErrorType::NotA, \"" << parameter.type.name << "\");";
+            out() << "        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, \"" << parameter.type.name << "\");";
             generate_return();
             out() << "    }";
             out() << "    auto& " << cpp_name << " = static_cast<" << parameter.type.name << "Wrapper*>(" << cpp_name << "_object)->impl();";
         } else if (parameter.type.name == "double") {
-            out() << "    auto " << cpp_name << " = " << js_name << js_suffix << ".to_double(interpreter);";
-            out() << "    if (interpreter.exception())";
+            out() << "    auto " << cpp_name << " = " << js_name << js_suffix << ".to_double(global_object);";
+            out() << "    if (vm.exception())";
             generate_return();
         } else if (parameter.type.name == "boolean") {
             out() << "    auto " << cpp_name << " = " << js_name << js_suffix << ".to_boolean();";
@@ -554,7 +559,7 @@ void generate_implementation(const IDL::Interface& interface)
         size_t argument_index = 0;
         for (auto& parameter : parameters) {
             parameter_names.append(snake_name(parameter.name));
-            out() << "    auto arg" << argument_index << " = interpreter.argument(" << argument_index << ");";
+            out() << "    auto arg" << argument_index << " = vm.argument(" << argument_index << ");";
             generate_to_cpp(parameter, "arg", argument_index, snake_name(parameter.name), return_void);
             ++argument_index;
         }
@@ -578,7 +583,7 @@ void generate_implementation(const IDL::Interface& interface)
         }
 
         if (return_type.name == "DOMString") {
-            out() << "    return JS::js_string(interpreter, retval);";
+            out() << "    return JS::js_string(vm, retval);";
         } else if (return_type.name == "ArrayFromVector") {
             // FIXME: Remove this fake type hack once it's no longer needed.
             //        Basically once we have NodeList we can throw this out.
@@ -591,7 +596,7 @@ void generate_implementation(const IDL::Interface& interface)
             out() << "    return JS::Value(retval);";
         } else if (return_type.name == "Uint8ClampedArray") {
             out() << "    return retval;";
-        } else  if (return_type.name == "boolean") {
+        } else if (return_type.name == "boolean") {
             out() << "    return JS::Value(retval);";
         } else {
             out() << "    return wrap(global_object, const_cast<" << return_type.name << "&>(*retval));";
@@ -602,9 +607,14 @@ void generate_implementation(const IDL::Interface& interface)
     for (auto& attribute : interface.attributes) {
         out() << "JS_DEFINE_NATIVE_GETTER(" << wrapper_class << "::" << attribute.getter_callback_name << ")";
         out() << "{";
-        out() << "    auto* impl = impl_from(interpreter, global_object);";
+        out() << "    auto* impl = impl_from(vm, global_object);";
         out() << "    if (!impl)";
         out() << "        return {};";
+
+        if (attribute.extended_attributes.contains("ReturnNullIfCrossOrigin")) {
+            out() << "    if (!impl->may_access_from_origin(static_cast<WindowObject&>(global_object).origin()))";
+            out() << "        return JS::js_null();";
+        }
 
         if (attribute.extended_attributes.contains("Reflect")) {
             auto attribute_name = attribute.extended_attributes.get("Reflect").value();
@@ -622,7 +632,7 @@ void generate_implementation(const IDL::Interface& interface)
         if (!attribute.readonly) {
             out() << "JS_DEFINE_NATIVE_SETTER(" << wrapper_class << "::" << attribute.setter_callback_name << ")";
             out() << "{";
-            out() << "    auto* impl = impl_from(interpreter, global_object);";
+            out() << "    auto* impl = impl_from(vm, global_object);";
             out() << "    if (!impl)";
             out() << "        return;";
 
@@ -645,15 +655,15 @@ void generate_implementation(const IDL::Interface& interface)
     for (auto& function : interface.functions) {
         out() << "JS_DEFINE_NATIVE_FUNCTION(" << wrapper_class << "::" << snake_name(function.name) << ")";
         out() << "{";
-        out() << "    auto* impl = impl_from(interpreter, global_object);";
+        out() << "    auto* impl = impl_from(vm, global_object);";
         out() << "    if (!impl)";
         out() << "        return {};";
         if (function.length() > 0) {
-            out() << "    if (interpreter.argument_count() < " << function.length() << ") {";
+            out() << "    if (vm.argument_count() < " << function.length() << ") {";
             if (function.length() == 1)
-                out() << "        interpreter.throw_exception<JS::TypeError>(JS::ErrorType::BadArgCountOne, \"" << function.name << "\");";
+                out() << "        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::BadArgCountOne, \"" << function.name << "\");";
             else
-                out() << "        interpreter.throw_exception<JS::TypeError>(JS::ErrorType::BadArgCountMany, \"" << function.name << "\", \"" << function.length() << "\");";
+                out() << "        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::BadArgCountMany, \"" << function.name << "\", \"" << function.length() << "\");";
             out() << "        return {};";
             out() << "    }";
         }

@@ -24,7 +24,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Function.h>
 #include <LibWeb/Bindings/EventWrapper.h>
 #include <LibWeb/Bindings/EventWrapperFactory.h>
@@ -40,7 +39,8 @@
 namespace Web {
 
 XMLHttpRequest::XMLHttpRequest(DOM::Window& window)
-    : m_window(window)
+    : EventTarget(static_cast<Bindings::ScriptExecutionContext&>(window.document()))
+    , m_window(window)
 {
 }
 

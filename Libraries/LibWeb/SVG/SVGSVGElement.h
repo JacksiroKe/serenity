@@ -33,14 +33,11 @@ namespace Web::SVG {
 
 class SVGSVGElement final : public SVGGraphicsElement {
 public:
+    using WrapperType = Bindings::SVGSVGElementWrapper;
+
     SVGSVGElement(DOM::Document&, const FlyString& tag_name);
 
     virtual RefPtr<LayoutNode> create_layout_node(const CSS::StyleProperties* parent_style) override;
-
-    const RefPtr<Gfx::Bitmap> bitmap() const { return m_bitmap; }
-    bool create_bitmap_as_top_level_svg_element();
-
-    virtual void paint(Gfx::Painter& painter, const SVGPaintingContext& context) override;
 
     unsigned width() const;
     unsigned height() const;
@@ -50,3 +47,7 @@ private:
 };
 
 }
+
+AK_BEGIN_TYPE_TRAITS(Web::SVG::SVGSVGElement)
+static bool is_type(const Web::DOM::Node& node) { return node.is_svg_element() && downcast<Web::SVG::SVGElement>(node).local_name() == Web::SVG::TagNames::svg; }
+AK_END_TYPE_TRAITS()

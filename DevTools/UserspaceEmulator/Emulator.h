@@ -131,7 +131,8 @@ private:
     int virt$select(FlatPtr);
     int virt$accept(int sockfd, FlatPtr address, FlatPtr address_length);
     int virt$bind(int sockfd, FlatPtr address, socklen_t address_length);
-    int virt$recvfrom(FlatPtr);
+    int virt$recvmsg(int sockfd, FlatPtr msg_addr, int flags);
+    int virt$sendmsg(int sockfd, FlatPtr msg_addr, int flags);
     int virt$connect(int sockfd, FlatPtr address, socklen_t address_size);
     void virt$exit(int);
     ssize_t virt$getrandom(FlatPtr buffer, size_t buffer_size, unsigned int flags);
@@ -143,6 +144,7 @@ private:
     int virt$ttyname(int fd, FlatPtr buffer, size_t buffer_size);
     int virt$getcwd(FlatPtr buffer, size_t buffer_size);
     int virt$waitid(FlatPtr);
+    int virt$getsid(pid_t);
 
     FlatPtr allocate_vm(size_t size, size_t alignment);
 
@@ -168,7 +170,5 @@ private:
 
     FlatPtr m_signal_trampoline { 0 };
 };
-
-void report(const char*, ...);
 
 }

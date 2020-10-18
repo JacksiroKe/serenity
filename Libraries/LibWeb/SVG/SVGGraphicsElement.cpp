@@ -48,13 +48,4 @@ void SVGGraphicsElement::parse_attribute(const FlyString& name, const String& va
     }
 }
 
-SVGPaintingContext SVGGraphicsElement::make_painting_context_from(const SVGPaintingContext& context)
-{
-    return SVGPaintingContext {
-        m_fill_color.value_or(context.fill_color),
-        m_stroke_color.value_or(context.stroke_color),
-        m_stroke_width.value_or(context.stroke_width),
-    };
-}
-
 }

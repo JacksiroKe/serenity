@@ -25,6 +25,7 @@
  */
 
 #include "ToolboxWidget.h"
+#include "BrushTool.h"
 #include "BucketTool.h"
 #include "EllipseTool.h"
 #include "EraseTool.h"
@@ -121,12 +122,13 @@ void ToolboxWidget::setup_tools()
         button.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
         button.set_preferred_size(0, 32);
         button.set_checkable(true);
-        button.set_icon(Gfx::Bitmap::load_from_file(String::format("/res/icons/pixelpaint/%s.png", icon_name.to_string().characters())));
+        button.set_icon(Gfx::Bitmap::load_from_file(String::formatted("/res/icons/pixelpaint/{}.png", icon_name)));
         return button;
     };
 
     add_tool("Move", "move", { 0, Key_M }, make<MoveTool>());
     add_tool("Pen", "pen", { 0, Key_N }, make<PenTool>());
+    add_tool("Brush", "brush", { 0, Key_P }, make<BrushTool>());
     add_tool("Bucket Fill", "bucket", { Mod_Shift, Key_B }, make<BucketTool>());
     add_tool("Spray", "spray", { Mod_Shift, Key_S }, make<SprayTool>());
     add_tool("Color Picker", "picker", { 0, Key_O }, make<PickerTool>());

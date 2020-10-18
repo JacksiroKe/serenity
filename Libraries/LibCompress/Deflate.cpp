@@ -110,7 +110,7 @@ u32 CanonicalCode::read_symbol(InputBitStream& stream) const
     for (;;) {
         code_bits = code_bits << 1 | stream.read_bits(1);
 
-        // FIXME: This seems really inefficent, this could be an index into an array instead.
+        // FIXME: This seems really inefficient, this could be an index into an array instead.
         size_t index;
         if (AK::binary_search(m_symbol_codes.span(), code_bits, AK::integral_compare<u32>, &index))
             return m_symbol_values[index];
@@ -290,7 +290,7 @@ bool DeflateDecompressor::discard_or_error(size_t count)
 
     size_t ndiscarded = 0;
     while (ndiscarded < count) {
-        if (eof()) {
+        if (unreliable_eof()) {
             set_fatal_error();
             return false;
         }
@@ -301,16 +301,16 @@ bool DeflateDecompressor::discard_or_error(size_t count)
     return true;
 }
 
-bool DeflateDecompressor::eof() const { return m_state == State::Idle && m_read_final_bock; }
+bool DeflateDecompressor::unreliable_eof() const { return m_state == State::Idle && m_read_final_bock; }
 
 Optional<ByteBuffer> DeflateDecompressor::decompress_all(ReadonlyBytes bytes)
 {
     InputMemoryStream memory_stream { bytes };
     DeflateDecompressor deflate_stream { memory_stream };
-    OutputMemoryStream output_stream;
+    DuplexMemoryStream output_stream;
 
     u8 buffer[4096];
-    while (!deflate_stream.has_any_error() && !deflate_stream.eof()) {
+    while (!deflate_stream.has_any_error() && !deflate_stream.unreliable_eof()) {
         const auto nread = deflate_stream.read({ buffer, sizeof(buffer) });
         output_stream.write_or_error({ buffer, nread });
     }

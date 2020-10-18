@@ -24,7 +24,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/SymbolConstructor.h>
@@ -33,21 +32,22 @@
 namespace JS {
 
 SymbolConstructor::SymbolConstructor(GlobalObject& global_object)
-    : NativeFunction("Symbol", *global_object.function_prototype())
+    : NativeFunction(vm().names.Symbol, *global_object.function_prototype())
 {
 }
 
 void SymbolConstructor::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property("prototype", global_object.symbol_prototype(), 0);
-    define_property("length", Value(0), Attribute::Configurable);
+    define_property(vm.names.prototype, global_object.symbol_prototype(), 0);
+    define_property(vm.names.length, Value(0), Attribute::Configurable);
 
-    define_native_function("for", for_, 1, Attribute::Writable | Attribute::Configurable);
-    define_native_function("keyFor", key_for, 1, Attribute::Writable | Attribute::Configurable);
+    define_native_function(vm.names.for_, for_, 1, Attribute::Writable | Attribute::Configurable);
+    define_native_function(vm.names.keyFor, key_for, 1, Attribute::Writable | Attribute::Configurable);
 
 #define __JS_ENUMERATE(SymbolName, snake_name) \
-    define_property(#SymbolName, global_object.interpreter().well_known_symbol_##snake_name(), 0);
+    define_property(vm.names.SymbolName, vm.well_known_symbol_##snake_name(), 0);
     JS_ENUMERATE_WELL_KNOWN_SYMBOLS
 #undef __JS_ENUMERATE
 }
@@ -56,42 +56,42 @@ SymbolConstructor::~SymbolConstructor()
 {
 }
 
-Value SymbolConstructor::call(Interpreter& interpreter)
+Value SymbolConstructor::call()
 {
-    if (!interpreter.argument_count())
-        return js_symbol(interpreter, "", false);
-    return js_symbol(interpreter, interpreter.argument(0).to_string(interpreter), false);
+    if (!vm().argument_count())
+        return js_symbol(heap(), "", false);
+    return js_symbol(heap(), vm().argument(0).to_string(global_object()), false);
 }
 
-Value SymbolConstructor::construct(Interpreter& interpreter, Function&)
+Value SymbolConstructor::construct(Function&)
 {
-    interpreter.throw_exception<TypeError>(ErrorType::NotAConstructor, "Symbol");
+    vm().throw_exception<TypeError>(global_object(), ErrorType::NotAConstructor, "Symbol");
     return {};
 }
 
 JS_DEFINE_NATIVE_FUNCTION(SymbolConstructor::for_)
 {
     String description;
-    if (!interpreter.argument_count()) {
+    if (!vm.argument_count()) {
         description = "undefined";
     } else {
-        description = interpreter.argument(0).to_string(interpreter);
+        description = vm.argument(0).to_string(global_object);
     }
 
-    return interpreter.get_global_symbol(description);
+    return global_object.vm().get_global_symbol(description);
 }
 
 JS_DEFINE_NATIVE_FUNCTION(SymbolConstructor::key_for)
 {
-    auto argument = interpreter.argument(0);
+    auto argument = vm.argument(0);
     if (!argument.is_symbol()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotASymbol, argument.to_string_without_side_effects().characters());
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotASymbol, argument.to_string_without_side_effects());
         return {};
     }
 
     auto& symbol = argument.as_symbol();
     if (symbol.is_global())
-        return js_string(interpreter, symbol.description());
+        return js_string(vm, symbol.description());
 
     return js_undefined();
 }

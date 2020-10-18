@@ -305,8 +305,8 @@ void ColumnsView::move_cursor(CursorMovement movement, SelectionUpdate selection
             if (model.is_valid(cursor_index()))
                 push_column(cursor_index());
             update();
-        break;
-    }
+            break;
+        }
     default:
         break;
     }
@@ -315,17 +315,19 @@ void ColumnsView::move_cursor(CursorMovement movement, SelectionUpdate selection
         set_cursor(new_index, selection_update);
 }
 
-void ColumnsView::keydown_event(KeyEvent& event)
+Gfx::IntRect ColumnsView::content_rect(const ModelIndex& index) const
 {
-    if (!model())
-        return;
+    if (!index.is_valid())
+        return {};
 
-    if (event.key() == KeyCode::Key_Return) {
-        activate_selected();
-        return;
+    int column_x = 0;
+    for (auto& column : m_columns) {
+        if (column.parent_index == index.parent())
+            return { column_x + icon_size(), index.row() * item_height(), column.width - icon_size(), item_height() };
+        column_x += column.width + 1;
     }
 
-    AbstractView::keydown_event(event);
+    return {};
 }
 
 }

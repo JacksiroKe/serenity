@@ -24,14 +24,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/GlobalObject.h>
+#include <LibJS/Runtime/LexicalEnvironment.h>
 #include <LibJS/Runtime/NativeFunction.h>
 #include <LibJS/Runtime/Value.h>
 
 namespace JS {
 
-NativeFunction* NativeFunction::create(Interpreter&, GlobalObject& global_object, const FlyString& name, AK::Function<Value(Interpreter&, GlobalObject&)> function)
+NativeFunction* NativeFunction::create(GlobalObject& global_object, const FlyString& name, AK::Function<Value(VM&, GlobalObject&)> function)
 {
     return global_object.heap().allocate<NativeFunction>(global_object, name, move(function), *global_object.function_prototype());
 }
@@ -41,7 +41,7 @@ NativeFunction::NativeFunction(Object& prototype)
 {
 }
 
-NativeFunction::NativeFunction(const FlyString& name, AK::Function<Value(Interpreter&, GlobalObject&)> native_function, Object& prototype)
+NativeFunction::NativeFunction(const FlyString& name, AK::Function<Value(VM&, GlobalObject&)> native_function, Object& prototype)
     : Function(prototype)
     , m_name(name)
     , m_native_function(move(native_function))
@@ -58,19 +58,24 @@ NativeFunction::~NativeFunction()
 {
 }
 
-Value NativeFunction::call(Interpreter& interpreter)
+Value NativeFunction::call()
 {
-    return m_native_function(interpreter, global_object());
+    return m_native_function(vm(), global_object());
 }
 
-Value NativeFunction::construct(Interpreter&, Function&)
+Value NativeFunction::construct(Function&)
 {
     return {};
 }
 
 LexicalEnvironment* NativeFunction::create_environment()
 {
-    return interpreter().heap().allocate<LexicalEnvironment>(global_object(), LexicalEnvironment::EnvironmentRecordType::Function);
+    return heap().allocate<LexicalEnvironment>(global_object(), LexicalEnvironment::EnvironmentRecordType::Function);
+}
+
+bool NativeFunction::is_strict_mode() const
+{
+    return vm().in_strict_mode();
 }
 
 }

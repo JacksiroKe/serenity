@@ -34,6 +34,7 @@ namespace Markdown {
 
 class Text final {
     AK_MAKE_NONCOPYABLE(Text);
+
 public:
     struct Style {
         bool emph { false };
@@ -48,7 +49,11 @@ public:
         Style style;
     };
 
+    explicit Text(String&& text);
     Text(Text&& text) = default;
+    Text() = default;
+
+    Text& operator=(Text&&) = default;
 
     const Vector<Span>& spans() const { return m_spans; }
 

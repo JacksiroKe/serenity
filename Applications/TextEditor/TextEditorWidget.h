@@ -104,8 +104,9 @@ private:
     RefPtr<GUI::Action> m_cpp_highlight;
     RefPtr<GUI::Action> m_js_highlight;
     RefPtr<GUI::Action> m_ini_highlight;
+    RefPtr<GUI::Action> m_shell_highlight;
 
-    RefPtr<Web::InProcessWebView> m_page_view;
+    RefPtr<Web::OutOfProcessWebView> m_page_view;
 
     GUI::ActionGroup font_actions;
 

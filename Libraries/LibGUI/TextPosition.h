@@ -33,7 +33,7 @@ namespace GUI {
 
 class TextPosition {
 public:
-    TextPosition() {}
+    TextPosition() { }
     TextPosition(size_t line, size_t column)
         : m_line(line)
         , m_column(column)
@@ -63,5 +63,20 @@ inline const LogStream& operator<<(const LogStream& stream, const TextPosition& 
         return stream << "GUI::TextPosition(Invalid)";
     return stream << String::format("(%zu,%zu)", value.line(), value.column());
 }
+
+}
+
+namespace AK {
+
+template<>
+struct Formatter<GUI::TextPosition> : Formatter<StringView> {
+    void format(TypeErasedFormatParams& params, FormatBuilder& builder, const GUI::TextPosition& value)
+    {
+        if (value.is_valid())
+            Formatter<StringView>::format(params, builder, String::formatted("({},{})", value.line(), value.column()));
+        else
+            Formatter<StringView>::format(params, builder, "GUI::TextPosition(Invalid)");
+    }
+};
 
 }

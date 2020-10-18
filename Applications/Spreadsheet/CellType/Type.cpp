@@ -25,6 +25,7 @@
  */
 
 #include "Type.h"
+#include "Date.h"
 #include "Identity.h"
 #include "Numeric.h"
 #include "String.h"
@@ -35,6 +36,7 @@ static HashMap<String, Spreadsheet::CellType*> s_cell_types;
 static Spreadsheet::StringCell s_string_cell;
 static Spreadsheet::NumericCell s_numeric_cell;
 static Spreadsheet::IdentityCell s_identity_cell;
+static Spreadsheet::DateCell s_date_cell;
 
 namespace Spreadsheet {
 
@@ -52,6 +54,7 @@ Vector<StringView> CellType::names()
 }
 
 CellType::CellType(const StringView& name)
+    : m_name(name)
 {
     ASSERT(!s_cell_types.contains(name));
     s_cell_types.set(name, this);

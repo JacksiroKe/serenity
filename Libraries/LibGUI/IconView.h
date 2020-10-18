@@ -49,6 +49,7 @@ public:
     void set_model_column(int column) { m_model_column = column; }
 
     virtual ModelIndex index_at_event_position(const Gfx::IntPoint&) const override;
+    virtual Gfx::IntRect content_rect(const ModelIndex&) const override;
 
     virtual void select_all() override;
 
@@ -62,7 +63,6 @@ private:
     virtual void mousedown_event(MouseEvent&) override;
     virtual void mousemove_event(MouseEvent&) override;
     virtual void mouseup_event(MouseEvent&) override;
-    virtual void keydown_event(KeyEvent&) override;
     virtual void drag_move_event(DragEvent&) override;
 
     virtual void move_cursor(CursorMovement, SelectionUpdate) override;

@@ -1,4 +1,4 @@
-let x;
+let x, o;
 
 test("basic functionality", () => {
     x = 1;
@@ -52,4 +52,84 @@ test("basic functionality", () => {
     x = -(2 ** 32 - 10);
     expect((x >>>= 2)).toBe(2);
     expect(x).toBe(2);
+});
+
+test("logical assignment operators", () => {
+    // short circuiting evaluation
+    x = false;
+    expect((x &&= expect.fail())).toBeFalse();
+
+    x = true;
+    expect((x ||= expect.fail())).toBeTrue();
+
+    x = "foo";
+    expect((x ??= expect.fail())).toBe("foo");
+
+    const prepareObject = (shortCircuitValue, assignmentValue) => ({
+        get shortCircuit() {
+            return shortCircuitValue;
+        },
+        set shortCircuit(_) {
+            // assignment will short circuit in all test cases
+            // so its setter must never be called
+            expect().fail();
+        },
+        assignment: assignmentValue,
+    });
+
+    o = prepareObject(false, true);
+    expect((o.shortCircuit &&= "foo")).toBeFalse();
+    expect(o.shortCircuit).toBeFalse();
+    expect((o.assignment &&= "bar")).toBe("bar");
+    expect(o.assignment).toBe("bar");
+
+    o = prepareObject(true, false);
+    expect((o.shortCircuit ||= "foo")).toBeTrue();
+    expect(o.shortCircuit).toBeTrue();
+    expect((o.assignment ||= "bar")).toBe("bar");
+    expect(o.assignment).toBe("bar");
+
+    o = prepareObject("test", null);
+    expect((o.shortCircuit ??= "foo")).toBe("test");
+    expect(o.shortCircuit).toBe("test");
+    expect((o.assignment ??= "bar")).toBe("bar");
+    expect(o.assignment).toBe("bar");
+});
+
+test("evaluation order", () => {
+    for (const op of [
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "**=",
+        "&=",
+        "|=",
+        "^=",
+        "<<=",
+        ">>=",
+        ">>>=",
+        "&&=",
+        "||=",
+        "??=",
+    ]) {
+        var a = [];
+        function b() {
+            b.hasBeenCalled = true;
+            throw Error();
+        }
+        function c() {
+            c.hasBeenCalled = true;
+            throw Error();
+        }
+        b.hasBeenCalled = false;
+        c.hasBeenCalled = false;
+        expect(() => {
+            new Function(`a[b()] ${op} c()`)();
+        }).toThrow(Error);
+        expect(b.hasBeenCalled).toBeTrue();
+        expect(c.hasBeenCalled).toBeFalse();
+    }
 });

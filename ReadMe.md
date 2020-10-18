@@ -120,6 +120,8 @@ We also have a project mailing list: [serenityos-dev](https://lists.sr.ht/~aweso
 * **Brian Gianforcaro** - [bgianfo](https://github.com/bgianfo)
 * **Ben Wiederhake** - [BenWiederhake](https://github.com/BenWiederhake)
 * **Tom** - [tomuta](https://github.com/tomuta)
+* **Paul Scharnofske** - [asynts](https://github.com/asynts)
+* **Itamar Shenhar** - [itamar8910](https://github.com/itamar8910)
 
 (And many more!) The people listed above have landed more than 100 commits in the project. :^)
 

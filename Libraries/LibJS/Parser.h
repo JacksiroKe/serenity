@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <AK/HashTable.h>
 #include <AK/NonnullRefPtr.h>
 #include <AK/StringBuilder.h>
 #include <LibJS/AST.h>
@@ -50,6 +51,7 @@ public:
 
     NonnullRefPtr<Statement> parse_statement();
     NonnullRefPtr<BlockStatement> parse_block_statement();
+    NonnullRefPtr<BlockStatement> parse_block_statement(bool& is_strict);
     NonnullRefPtr<ReturnStatement> parse_return_statement();
     NonnullRefPtr<VariableDeclaration> parse_variable_declaration(bool with_semicolon = true);
     NonnullRefPtr<Statement> parse_for_statement();
@@ -83,6 +85,7 @@ public:
     NonnullRefPtr<ClassDeclaration> parse_class_declaration();
     NonnullRefPtr<ClassExpression> parse_class_expression(bool expect_class_name);
     NonnullRefPtr<Expression> parse_property_key();
+    NonnullRefPtr<AssignmentExpression> parse_assignment_expression(AssignmentOp, NonnullRefPtr<Expression> lhs, int min_precedence, Associativity);
 
     struct Error {
         String message;
@@ -93,7 +96,7 @@ public:
         {
             if (line == 0 || column == 0)
                 return message;
-            return String::format("%s (line: %zu, column: %zu)", message.characters(), line, column);
+            return String::formatted("{} (line: {}, column: {})", message, line, column);
         }
 
         String source_location_hint(const StringView& source, const char spacer = ' ', const char indicator = '^') const
@@ -153,9 +156,13 @@ private:
         Vector<NonnullRefPtrVector<VariableDeclaration>> m_let_scopes;
         Vector<NonnullRefPtrVector<FunctionDeclaration>> m_function_scopes;
         UseStrictDirectiveState m_use_strict_directive { UseStrictDirectiveState::None };
+        HashTable<StringView> m_labels_in_scope;
         bool m_strict_mode { false };
         bool m_allow_super_property_lookup { false };
         bool m_allow_super_constructor_call { false };
+        bool m_in_function_context { false };
+        bool m_in_break_context { false };
+        bool m_in_continue_context { false };
 
         explicit ParserState(Lexer);
     };

@@ -39,10 +39,15 @@ public:
 
     virtual RefPtr<LayoutNode> create_layout_node(const CSS::StyleProperties* parent_style) override;
 
-    Frame* hosted_frame() { return m_hosted_frame; }
-    const Frame* hosted_frame() const { return m_hosted_frame; }
+    Frame* content_frame() { return m_content_frame; }
+    const Frame* content_frame() const { return m_content_frame; }
 
     const DOM::Document* content_document() const;
+
+    Origin content_origin() const;
+    bool may_access_from_origin(const Origin&) const;
+
+    void content_frame_did_load(Badge<FrameLoader>);
 
 private:
     virtual void document_did_attach_to_frame(Frame&) override;
@@ -50,7 +55,7 @@ private:
 
     void load_src(const String&);
 
-    RefPtr<Frame> m_hosted_frame;
+    RefPtr<Frame> m_content_frame;
 };
 
 }

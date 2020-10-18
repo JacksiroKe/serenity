@@ -51,14 +51,9 @@ Heap& Cell::heap() const
     return HeapBlock::from_cell(this)->heap();
 }
 
-Interpreter& Cell::interpreter()
+VM& Cell::vm() const
 {
-    return heap().interpreter();
-}
-
-Interpreter& Cell::interpreter() const
-{
-    return heap().interpreter();
+    return heap().vm();
 }
 
 const LogStream& operator<<(const LogStream& stream, const Cell* cell)

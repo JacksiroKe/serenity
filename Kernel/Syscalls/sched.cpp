@@ -40,8 +40,12 @@ int Process::sys$donate(pid_t tid)
     REQUIRE_PROMISE(stdio);
     if (tid < 0)
         return -EINVAL;
-    InterruptDisabler disabler;
-    auto* thread = Thread::from_tid(tid);
+
+    // We don't strictly need to grab the scheduler lock here, but it
+    // will close a race where we can find the thread but it disappears
+    // before we call Scheduler::donate_to.
+    ScopedSpinLock lock(g_scheduler_lock);
+    auto thread = Thread::from_tid(tid);
     if (!thread || thread->pid() != pid())
         return -ESRCH;
     Scheduler::donate_to(thread, "sys$donate");
@@ -51,14 +55,15 @@ int Process::sys$donate(pid_t tid)
 int Process::sys$sched_setparam(int pid, Userspace<const struct sched_param*> user_param)
 {
     REQUIRE_PROMISE(proc);
-    if (!validate_read_typed(user_param))
+    struct sched_param desired_param;
+    if (!copy_from_user(&desired_param, user_param))
         return -EFAULT;
 
-    struct sched_param desired_param;
-    copy_from_user(&desired_param, user_param);
+    if (desired_param.sched_priority < THREAD_PRIORITY_MIN || desired_param.sched_priority > THREAD_PRIORITY_MAX)
+        return -EINVAL;
 
-    InterruptDisabler disabler;
     auto* peer = Thread::current();
+    ScopedSpinLock lock(g_scheduler_lock);
     if (pid != 0)
         peer = Thread::from_tid(pid);
 
@@ -68,9 +73,6 @@ int Process::sys$sched_setparam(int pid, Userspace<const struct sched_param*> us
     if (!is_superuser() && m_euid != peer->process().m_uid && m_uid != peer->process().m_uid)
         return -EPERM;
 
-    if (desired_param.sched_priority < THREAD_PRIORITY_MIN || desired_param.sched_priority > THREAD_PRIORITY_MAX)
-        return -EINVAL;
-
     peer->set_priority((u32)desired_param.sched_priority);
     return 0;
 }
@@ -78,27 +80,30 @@ int Process::sys$sched_setparam(int pid, Userspace<const struct sched_param*> us
 int Process::sys$sched_getparam(pid_t pid, Userspace<struct sched_param*> user_param)
 {
     REQUIRE_PROMISE(proc);
-    if (!validate_write_typed(user_param))
-        return -EFAULT;
+    int priority;
+    {
+        auto* peer = Thread::current();
+        ScopedSpinLock lock(g_scheduler_lock);
+        if (pid != 0) {
+            // FIXME: PID/TID BUG
+            // The entire process is supposed to be affected.
+            peer = Thread::from_tid(pid);
+        }
 
-    InterruptDisabler disabler;
-    auto* peer = Thread::current();
-    if (pid != 0) {
-        // FIXME: PID/TID BUG
-        // The entire process is supposed to be affected.
-        peer = Thread::from_tid(pid);
+        if (!peer)
+            return -ESRCH;
+
+        if (!is_superuser() && m_euid != peer->process().m_uid && m_uid != peer->process().m_uid)
+            return -EPERM;
+
+        priority = (int)peer->priority();
     }
 
-    if (!peer)
-        return -ESRCH;
-
-    if (!is_superuser() && m_euid != peer->process().m_uid && m_uid != peer->process().m_uid)
-        return -EPERM;
-
     struct sched_param param {
-        (int)peer->priority()
+        priority
     };
-    copy_to_user(user_param, &param);
+    if (!copy_to_user(user_param, &param))
+        return -EFAULT;
     return 0;
 }
 
@@ -107,8 +112,8 @@ int Process::sys$set_thread_boost(pid_t tid, int amount)
     REQUIRE_PROMISE(proc);
     if (amount < 0 || amount > 20)
         return -EINVAL;
-    InterruptDisabler disabler;
-    auto* thread = Thread::from_tid(tid);
+    ScopedSpinLock lock(g_scheduler_lock);
+    auto thread = Thread::from_tid(tid);
     if (!thread)
         return -ESRCH;
     if (thread->state() == Thread::State::Dead || thread->state() == Thread::State::Dying)

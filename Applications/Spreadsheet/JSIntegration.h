@@ -45,6 +45,7 @@ public:
     virtual void initialize() override;
 
     JS_DECLARE_NATIVE_FUNCTION(parse_cell_name);
+    JS_DECLARE_NATIVE_FUNCTION(current_cell_position);
 
 private:
     Sheet& m_sheet;

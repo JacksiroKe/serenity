@@ -25,7 +25,6 @@
  */
 
 #include "DisplaySettings.h"
-#include <LibGUI/ItemListModel.h>
 #include <AK/StringBuilder.h>
 #include <LibCore/ConfigFile.h>
 #include <LibCore/DirIterator.h>
@@ -35,6 +34,7 @@
 #include <LibGUI/ComboBox.h>
 #include <LibGUI/Desktop.h>
 #include <LibGUI/FilePicker.h>
+#include <LibGUI/ItemListModel.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/MessageBox.h>
 #include <LibGUI/WindowServerConnection.h>
@@ -338,14 +338,14 @@ void DisplaySettingsWidget::send_settings_to_window_server()
 {
     auto result = GUI::WindowServerConnection::the().send_sync<Messages::WindowServer::SetResolution>(m_monitor_widget->desktop_resolution());
     if (!result->success()) {
-        GUI::MessageBox::show(root_widget()->window(), String::format("Reverting to resolution %dx%d", result->resolution().width(), result->resolution().height()),
+        GUI::MessageBox::show(root_widget()->window(), String::formatted("Reverting to resolution {}x{}", result->resolution().width(), result->resolution().height()),
             "Unable to set resolution", GUI::MessageBox::Type::Error);
     }
 
     if (!m_monitor_widget->wallpaper().is_empty()) {
         GUI::Desktop::the().set_wallpaper(m_monitor_widget->wallpaper());
     } else {
-        dbg() << "Setting color input: __" << m_color_input->text() << "__";
+        dbgln("Setting color input: __{}__", m_color_input->text());
         GUI::Desktop::the().set_wallpaper("");
         GUI::Desktop::the().set_background_color(m_color_input->text());
     }

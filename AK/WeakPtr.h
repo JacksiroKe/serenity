@@ -39,8 +39,8 @@ class WeakPtr {
     friend class Weakable<T>;
 
 public:
-    WeakPtr() {}
-    WeakPtr(std::nullptr_t) {}
+    WeakPtr() { }
+    WeakPtr(std::nullptr_t) { }
 
     template<typename U>
     WeakPtr(WeakPtr<U>&& other)
@@ -101,6 +101,14 @@ inline const LogStream& operator<<(const LogStream& stream, const WeakPtr<T>& va
 {
     return stream << value.ptr();
 }
+
+template<typename T>
+struct Formatter<WeakPtr<T>> : Formatter<const T*> {
+    void format(TypeErasedFormatParams& params, FormatBuilder& builder, const WeakPtr<T>& value)
+    {
+        Formatter<const T*>::format(params, builder, value.ptr());
+    }
+};
 
 }
 

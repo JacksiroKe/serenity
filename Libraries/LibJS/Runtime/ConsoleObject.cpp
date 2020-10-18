@@ -29,7 +29,6 @@
 #include <AK/FlyString.h>
 #include <AK/Function.h>
 #include <LibJS/Console.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/ConsoleObject.h>
 #include <LibJS/Runtime/GlobalObject.h>
 
@@ -42,16 +41,17 @@ ConsoleObject::ConsoleObject(GlobalObject& global_object)
 
 void ConsoleObject::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     Object::initialize(global_object);
-    define_native_function("log", log);
-    define_native_function("debug", debug);
-    define_native_function("info", info);
-    define_native_function("warn", warn);
-    define_native_function("error", error);
-    define_native_function("trace", trace);
-    define_native_function("count", count);
-    define_native_function("countReset", count_reset);
-    define_native_function("clear", clear);
+    define_native_function(vm.names.log, log);
+    define_native_function(vm.names.debug, debug);
+    define_native_function(vm.names.info, info);
+    define_native_function(vm.names.warn, warn);
+    define_native_function(vm.names.error, error);
+    define_native_function(vm.names.trace, trace);
+    define_native_function(vm.names.count, count);
+    define_native_function(vm.names.countReset, count_reset);
+    define_native_function(vm.names.clear, clear);
 }
 
 ConsoleObject::~ConsoleObject()
@@ -60,47 +60,47 @@ ConsoleObject::~ConsoleObject()
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::log)
 {
-    return interpreter.console().log();
+    return global_object.console().log();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::debug)
 {
-    return interpreter.console().debug();
+    return global_object.console().debug();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::info)
 {
-    return interpreter.console().info();
+    return global_object.console().info();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::warn)
 {
-    return interpreter.console().warn();
+    return global_object.console().warn();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::error)
 {
-    return interpreter.console().error();
+    return global_object.console().error();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::trace)
 {
-    return interpreter.console().trace();
+    return global_object.console().trace();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::count)
 {
-    return interpreter.console().count();
+    return global_object.console().count();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::count_reset)
 {
-    return interpreter.console().count_reset();
+    return global_object.console().count_reset();
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ConsoleObject::clear)
 {
-    return interpreter.console().clear();
+    return global_object.console().clear();
 }
 
 }

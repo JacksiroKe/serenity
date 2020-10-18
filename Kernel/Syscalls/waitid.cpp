@@ -68,7 +68,9 @@ KResultOr<siginfo_t> Process::do_waitid(idtype_t idtype, int id, int options)
         return reap(*waitee_process);
     } else {
         // FIXME: PID/TID BUG
-        auto* waitee_thread = Thread::from_tid(waitee_pid.value());
+        // Make sure to hold the scheduler lock so that we operate on a consistent state
+        ScopedSpinLock scheduler_lock(g_scheduler_lock);
+        auto waitee_thread = Thread::from_tid(waitee_pid.value());
         if (!waitee_thread)
             return KResult(-ECHILD);
         ASSERT((options & WNOHANG) || waitee_thread->state() == Thread::State::Stopped);
@@ -86,6 +88,7 @@ KResultOr<siginfo_t> Process::do_waitid(idtype_t idtype, int id, int options)
         case Thread::State::Runnable:
         case Thread::State::Blocked:
         case Thread::State::Dying:
+        case Thread::State::Dead:
         case Thread::State::Queued:
             siginfo.si_code = CLD_CONTINUED;
             break;
@@ -104,27 +107,19 @@ pid_t Process::sys$waitid(Userspace<const Syscall::SC_waitid_params*> user_param
     REQUIRE_PROMISE(proc);
 
     Syscall::SC_waitid_params params;
-    if (!validate_read_and_copy_typed(&params, user_params))
-        return -EFAULT;
-
-    if (!validate_write_typed(params.infop))
+    if (!copy_from_user(&params, user_params))
         return -EFAULT;
 
 #ifdef PROCESS_DEBUG
-    dbg() << "sys$waitid(" << params.idtype << ", " << params.id << ", " << params.infop.ptr() << ", " << params.options << ")";
+    dbg() << "sys$waitid(" << params.idtype << ", " << params.id << ", " << params.infop << ", " << params.options << ")";
 #endif
 
     auto siginfo_or_error = do_waitid(static_cast<idtype_t>(params.idtype), params.id, params.options);
     if (siginfo_or_error.is_error())
         return siginfo_or_error.error();
-    // While we waited, the process lock was dropped. This gave other threads
-    // the opportunity to mess with the memory. For example, it could free the
-    // region, and map it to a region to which it has no write permissions.
-    // Therefore, we need to re-validate the pointer.
-    if (!validate_write_typed(params.infop))
-        return -EFAULT;
 
-    copy_to_user(params.infop, &siginfo_or_error.value());
+    if (!copy_to_user(params.infop, &siginfo_or_error.value()))
+        return -EFAULT;
     return 0;
 }
 

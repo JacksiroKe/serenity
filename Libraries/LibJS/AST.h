@@ -129,8 +129,6 @@ public:
     void add_functions(NonnullRefPtrVector<FunctionDeclaration>);
     const NonnullRefPtrVector<VariableDeclaration>& variables() const { return m_variables; }
     const NonnullRefPtrVector<FunctionDeclaration>& functions() const { return m_functions; }
-    bool in_strict_mode() const { return m_strict_mode; }
-    void set_strict_mode() { m_strict_mode = true; }
 
 protected:
     ScopeNode() { }
@@ -140,19 +138,25 @@ private:
     NonnullRefPtrVector<Statement> m_children;
     NonnullRefPtrVector<VariableDeclaration> m_variables;
     NonnullRefPtrVector<FunctionDeclaration> m_functions;
-    bool m_strict_mode { false };
 };
 
-class Program : public ScopeNode {
+class Program final : public ScopeNode {
 public:
     Program() { }
 
+    virtual Value execute(Interpreter&, GlobalObject&) const override;
+
+    bool is_strict_mode() const { return m_is_strict_mode; }
+    void set_strict_mode() { m_is_strict_mode = true; }
+
 private:
+    bool m_is_strict_mode { false };
+
     virtual bool is_program() const override { return true; }
     virtual const char* class_name() const override { return "Program"; }
 };
 
-class BlockStatement : public ScopeNode {
+class BlockStatement final : public ScopeNode {
 public:
     BlockStatement() { }
 
@@ -180,14 +184,16 @@ public:
     const Statement& body() const { return *m_body; }
     const Vector<Parameter>& parameters() const { return m_parameters; };
     i32 function_length() const { return m_function_length; }
+    bool is_strict_mode() const { return m_is_strict_mode; }
 
 protected:
-    FunctionNode(const FlyString& name, NonnullRefPtr<Statement> body, Vector<Parameter> parameters, i32 function_length, NonnullRefPtrVector<VariableDeclaration> variables)
+    FunctionNode(const FlyString& name, NonnullRefPtr<Statement> body, Vector<Parameter> parameters, i32 function_length, NonnullRefPtrVector<VariableDeclaration> variables, bool is_strict_mode)
         : m_name(name)
         , m_body(move(body))
         , m_parameters(move(parameters))
         , m_variables(move(variables))
         , m_function_length(function_length)
+        , m_is_strict_mode(is_strict_mode)
     {
     }
 
@@ -201,6 +207,7 @@ private:
     const Vector<Parameter> m_parameters;
     NonnullRefPtrVector<VariableDeclaration> m_variables;
     const i32 m_function_length;
+    bool m_is_strict_mode;
 };
 
 class FunctionDeclaration final
@@ -209,8 +216,8 @@ class FunctionDeclaration final
 public:
     static bool must_have_name() { return true; }
 
-    FunctionDeclaration(const FlyString& name, NonnullRefPtr<Statement> body, Vector<Parameter> parameters, i32 function_length, NonnullRefPtrVector<VariableDeclaration> variables)
-        : FunctionNode(name, move(body), move(parameters), function_length, move(variables))
+    FunctionDeclaration(const FlyString& name, NonnullRefPtr<Statement> body, Vector<Parameter> parameters, i32 function_length, NonnullRefPtrVector<VariableDeclaration> variables, bool is_strict_mode = false)
+        : FunctionNode(name, move(body), move(parameters), function_length, move(variables), is_strict_mode)
     {
     }
 
@@ -227,8 +234,8 @@ class FunctionExpression final
 public:
     static bool must_have_name() { return false; }
 
-    FunctionExpression(const FlyString& name, NonnullRefPtr<Statement> body, Vector<Parameter> parameters, i32 function_length, NonnullRefPtrVector<VariableDeclaration> variables, bool is_arrow_function = false)
-        : FunctionNode(name, move(body), move(parameters), function_length, move(variables))
+    FunctionExpression(const FlyString& name, NonnullRefPtr<Statement> body, Vector<Parameter> parameters, i32 function_length, NonnullRefPtrVector<VariableDeclaration> variables, bool is_strict_mode, bool is_arrow_function = false)
+        : FunctionNode(name, move(body), move(parameters), function_length, move(variables), is_strict_mode)
         , m_is_arrow_function(is_arrow_function)
     {
     }
@@ -248,7 +255,7 @@ public:
     const char* class_name() const override { return "ErrorExpression"; }
 };
 
-class ReturnStatement : public Statement {
+class ReturnStatement final : public Statement {
 public:
     explicit ReturnStatement(RefPtr<Expression> argument)
         : m_argument(move(argument))
@@ -266,7 +273,7 @@ private:
     RefPtr<Expression> m_argument;
 };
 
-class IfStatement : public Statement {
+class IfStatement final : public Statement {
 public:
     IfStatement(NonnullRefPtr<Expression> predicate, NonnullRefPtr<Statement> consequent, RefPtr<Statement> alternate)
         : m_predicate(move(predicate))
@@ -290,7 +297,7 @@ private:
     RefPtr<Statement> m_alternate;
 };
 
-class WhileStatement : public Statement {
+class WhileStatement final : public Statement {
 public:
     WhileStatement(NonnullRefPtr<Expression> test, NonnullRefPtr<Statement> body)
         : m_test(move(test))
@@ -311,7 +318,7 @@ private:
     NonnullRefPtr<Statement> m_body;
 };
 
-class DoWhileStatement : public Statement {
+class DoWhileStatement final : public Statement {
 public:
     DoWhileStatement(NonnullRefPtr<Expression> test, NonnullRefPtr<Statement> body)
         : m_test(move(test))
@@ -332,7 +339,7 @@ private:
     NonnullRefPtr<Statement> m_body;
 };
 
-class ForStatement : public Statement {
+class ForStatement final : public Statement {
 public:
     ForStatement(RefPtr<ASTNode> init, RefPtr<Expression> test, RefPtr<Expression> update, NonnullRefPtr<Statement> body)
         : m_init(move(init))
@@ -359,7 +366,7 @@ private:
     NonnullRefPtr<Statement> m_body;
 };
 
-class ForInStatement : public Statement {
+class ForInStatement final : public Statement {
 public:
     ForInStatement(NonnullRefPtr<ASTNode> lhs, NonnullRefPtr<Expression> rhs, NonnullRefPtr<Statement> body)
         : m_lhs(move(lhs))
@@ -383,7 +390,7 @@ private:
     NonnullRefPtr<Statement> m_body;
 };
 
-class ForOfStatement : public Statement {
+class ForOfStatement final : public Statement {
 public:
     ForOfStatement(NonnullRefPtr<ASTNode> lhs, NonnullRefPtr<Expression> rhs, NonnullRefPtr<Statement> body)
         : m_lhs(move(lhs))
@@ -432,7 +439,7 @@ enum class BinaryOp {
     InstanceOf,
 };
 
-class BinaryExpression : public Expression {
+class BinaryExpression final : public Expression {
 public:
     BinaryExpression(BinaryOp op, NonnullRefPtr<Expression> lhs, NonnullRefPtr<Expression> rhs)
         : m_op(op)
@@ -458,7 +465,7 @@ enum class LogicalOp {
     NullishCoalescing,
 };
 
-class LogicalExpression : public Expression {
+class LogicalExpression final : public Expression {
 public:
     LogicalExpression(LogicalOp op, NonnullRefPtr<Expression> lhs, NonnullRefPtr<Expression> rhs)
         : m_op(op)
@@ -488,7 +495,7 @@ enum class UnaryOp {
     Delete,
 };
 
-class UnaryExpression : public Expression {
+class UnaryExpression final : public Expression {
 public:
     UnaryExpression(UnaryOp op, NonnullRefPtr<Expression> lhs)
         : m_op(op)
@@ -809,9 +816,12 @@ enum class AssignmentOp {
     LeftShiftAssignment,
     RightShiftAssignment,
     UnsignedRightShiftAssignment,
+    AndAssignment,
+    OrAssignment,
+    NullishAssignment,
 };
 
-class AssignmentExpression : public Expression {
+class AssignmentExpression final : public Expression {
 public:
     AssignmentExpression(AssignmentOp op, NonnullRefPtr<Expression> lhs, NonnullRefPtr<Expression> rhs)
         : m_op(op)
@@ -836,7 +846,7 @@ enum class UpdateOp {
     Decrement,
 };
 
-class UpdateExpression : public Expression {
+class UpdateExpression final : public Expression {
 public:
     UpdateExpression(UpdateOp op, NonnullRefPtr<Expression> argument, bool prefixed = false)
         : m_op(op)
@@ -888,7 +898,7 @@ private:
     RefPtr<Expression> m_init;
 };
 
-class VariableDeclaration : public Declaration {
+class VariableDeclaration final : public Declaration {
 public:
     VariableDeclaration(DeclarationKind declaration_kind, NonnullRefPtrVector<VariableDeclarator> declarations)
         : m_declaration_kind(declaration_kind)
@@ -950,7 +960,7 @@ private:
     bool m_is_method { false };
 };
 
-class ObjectExpression : public Expression {
+class ObjectExpression final : public Expression {
 public:
     ObjectExpression(NonnullRefPtrVector<ObjectProperty> properties = {})
         : m_properties(move(properties))
@@ -966,7 +976,7 @@ private:
     NonnullRefPtrVector<ObjectProperty> m_properties;
 };
 
-class ArrayExpression : public Expression {
+class ArrayExpression final : public Expression {
 public:
     ArrayExpression(Vector<RefPtr<Expression>> elements)
         : m_elements(move(elements))

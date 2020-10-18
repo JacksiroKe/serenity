@@ -37,13 +37,21 @@ public:
     using OutputType = KBuffer;
 
     explicit KBufferBuilder();
-    ~KBufferBuilder() {}
+    ~KBufferBuilder() { }
 
     void append(const StringView&);
     void append(char);
     void append(const char*, int);
     void appendf(const char*, ...);
     void appendvf(const char*, va_list);
+
+    template<typename... Parameters>
+    void appendff(StringView fmtstr, const Parameters&... parameters)
+    {
+        // FIXME: This is really not the way to go about it, but vformat expects a
+        //        StringBuilder. Why does this class exist anyways?
+        append(String::formatted(fmtstr, parameters...));
+    }
 
     KBuffer build();
 

@@ -29,6 +29,7 @@
 #include <AK/Assertions.h>
 #include <AK/LogStream.h>
 #include <AK/StdLibExtras.h>
+#include <AK/StringBuilder.h>
 #include <AK/Types.h>
 #include <stdarg.h>
 
@@ -204,6 +205,7 @@ ALWAYS_INLINE int print_double(PutChFunc putch, char*& bufptr, double number, bo
 template<typename PutChFunc>
 ALWAYS_INLINE int print_i64(PutChFunc putch, char*& bufptr, i64 number, bool left_pad, bool zero_pad, u32 field_width)
 {
+    // FIXME: This won't work if there is padding. '  -17' becomes '-  17'.
     if (number < 0) {
         putch(bufptr, '-');
         return print_u64(putch, bufptr, 0 - number, left_pad, zero_pad, field_width) + 1;
@@ -358,7 +360,7 @@ struct PrintfImpl {
     {
         if (state.long_qualifiers >= 2)
             return print_hex(m_putch, m_bufptr, NextArgument<u64>()(ap), false, state.alternate_form, state.left_pad, state.zero_pad, state.field_width);
-        return print_hex(m_putch, m_bufptr, NextArgument<u64>()(ap), false, state.alternate_form, state.left_pad, state.zero_pad, state.field_width);
+        return print_hex(m_putch, m_bufptr, NextArgument<u32>()(ap), false, state.alternate_form, state.left_pad, state.zero_pad, state.field_width);
     }
     ALWAYS_INLINE int format_X(const ModifierState& state, ArgumentListRefT ap) const
     {
@@ -399,7 +401,7 @@ struct PrintfImpl {
     }
     ALWAYS_INLINE int format_unrecognized(char format_op, const char* fmt, const ModifierState&, ArgumentListRefT) const
     {
-        dbg() << "printf_internal: Unimplemented format specifier " << format_op << " (fmt: " << fmt << ")";
+        dbgln("printf_internal: Unimplemented format specifier {} (fmt: {})", format_op, fmt);
         return 0;
     }
 

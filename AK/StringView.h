@@ -91,6 +91,8 @@ public:
     bool contains(const StringView&) const;
     bool equals_ignoring_case(const StringView& other) const;
 
+    StringView trim_whitespace(TrimMode mode = TrimMode::Both) const { return StringUtils::trim_whitespace(*this, mode); }
+
     Optional<size_t> find_first_of(char) const;
     Optional<size_t> find_first_of(const StringView&) const;
 
@@ -98,6 +100,7 @@ public:
     Optional<size_t> find_last_of(const StringView&) const;
 
     StringView substring_view(size_t start, size_t length) const;
+    StringView substring_view(size_t start) const;
     Vector<StringView> split_view(char, bool keep_empty = false) const;
     Vector<StringView> split_view(const StringView&, bool keep_empty = false) const;
 
@@ -182,6 +185,11 @@ private:
     const StringImpl* m_impl { nullptr };
     const char* m_characters { nullptr };
     size_t m_length { 0 };
+};
+
+template<>
+struct Traits<StringView> : public GenericTraits<String> {
+    static unsigned hash(const StringView& s) { return s.hash(); }
 };
 
 }

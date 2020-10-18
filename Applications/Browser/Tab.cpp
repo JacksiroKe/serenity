@@ -32,6 +32,7 @@
 #include "InspectorWidget.h"
 #include "WindowActions.h"
 #include <AK/StringBuilder.h>
+#include <Applications/Browser/TabUI.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/BoxLayout.h>
@@ -73,19 +74,31 @@ URL url_from_user_input(const String& input)
     return URL(builder.build());
 }
 
+static void start_download(const URL& url)
+{
+    auto window = GUI::Window::construct();
+    window->resize(300, 150);
+    window->set_title(String::formatted("0% of {}", url.basename()));
+    window->set_resizable(false);
+    window->set_main_widget<DownloadWidget>(url);
+    window->show();
+    (void)window.leak_ref();
+}
+
 Tab::Tab(Type type)
     : m_type(type)
 {
-    auto& widget = *this;
-    set_layout<GUI::VerticalBoxLayout>();
+    load_from_json(tab_ui_json);
 
-    m_toolbar_container = widget.add<GUI::ToolBarContainer>();
-    auto& toolbar = m_toolbar_container->add<GUI::ToolBar>();
+    m_toolbar_container = static_cast<GUI::ToolBarContainer&>(*find_descendant_by_name("toolbar_container"));
+    auto& toolbar = static_cast<GUI::ToolBar&>(*find_descendant_by_name("toolbar"));
+
+    auto& webview_container = *find_descendant_by_name("webview_container");
 
     if (m_type == Type::InProcessWebView)
-        m_page_view = widget.add<Web::InProcessWebView>();
+        m_page_view = webview_container.add<Web::InProcessWebView>();
     else
-        m_web_content_view = widget.add<Web::OutOfProcessWebView>();
+        m_web_content_view = webview_container.add<Web::OutOfProcessWebView>();
 
     m_go_back_action = GUI::CommonActions::make_go_back_action([this](auto&) { go_back(); }, this);
     m_go_forward_action = GUI::CommonActions::make_go_forward_action([this](auto&) { go_forward(); }, this);
@@ -101,6 +114,7 @@ Tab::Tab(Type type)
     m_location_box = toolbar.add<GUI::TextBox>();
     m_location_box->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
     m_location_box->set_preferred_size(0, 22);
+    m_location_box->set_placeholder("Address");
 
     m_location_box->on_return_pressed = [this] {
         auto url = url_from_user_input(m_location_box->text());
@@ -151,32 +165,52 @@ Tab::Tab(Type type)
     };
 
     m_link_context_menu = GUI::Menu::construct();
-    auto default_action = GUI::Action::create("Open", [this](auto&) {
+    auto link_default_action = GUI::Action::create("Open", [this](auto&) {
         hooks().on_link_click(m_link_context_menu_url, "", 0);
     });
-    m_link_context_menu->add_action(default_action);
-    m_link_context_menu_default_action = default_action;
+    m_link_context_menu->add_action(link_default_action);
+    m_link_context_menu_default_action = link_default_action;
     m_link_context_menu->add_action(GUI::Action::create("Open in new tab", [this](auto&) {
         hooks().on_link_click(m_link_context_menu_url, "_blank", 0);
     }));
+    m_link_context_menu->add_separator();
     m_link_context_menu->add_action(GUI::Action::create("Copy link", [this](auto&) {
         GUI::Clipboard::the().set_plain_text(m_link_context_menu_url.to_string());
     }));
     m_link_context_menu->add_separator();
     m_link_context_menu->add_action(GUI::Action::create("Download", [this](auto&) {
-        auto window = GUI::Window::construct();
-        window->resize(300, 150);
-        auto url = m_link_context_menu_url;
-        window->set_title(String::format("0%% of %s", url.basename().characters()));
-        window->set_resizable(false);
-        window->set_main_widget<DownloadWidget>(url);
-        window->show();
-        (void)window.leak_ref();
+        start_download(m_link_context_menu_url);
     }));
 
     hooks().on_link_context_menu_request = [this](auto& url, auto& screen_position) {
         m_link_context_menu_url = url;
         m_link_context_menu->popup(screen_position, m_link_context_menu_default_action);
+    };
+
+    m_image_context_menu = GUI::Menu::construct();
+    m_image_context_menu->add_action(GUI::Action::create("Open image", [this](auto&) {
+        hooks().on_link_click(m_image_context_menu_url, "", 0);
+    }));
+    m_image_context_menu->add_action(GUI::Action::create("Open image in new tab", [this](auto&) {
+        hooks().on_link_click(m_image_context_menu_url, "_blank", 0);
+    }));
+    m_image_context_menu->add_separator();
+    m_image_context_menu->add_action(GUI::Action::create("Copy image", [this](auto&) {
+        if (m_image_context_menu_bitmap.is_valid())
+            GUI::Clipboard::the().set_bitmap(*m_image_context_menu_bitmap.bitmap());
+    }));
+    m_image_context_menu->add_action(GUI::Action::create("Copy image URL", [this](auto&) {
+        GUI::Clipboard::the().set_plain_text(m_image_context_menu_url.to_string());
+    }));
+    m_image_context_menu->add_separator();
+    m_image_context_menu->add_action(GUI::Action::create("Download", [this](auto&) {
+        start_download(m_image_context_menu_url);
+    }));
+
+    hooks().on_image_context_menu_request = [this](auto& image_url, auto& screen_position, const Gfx::ShareableBitmap& shareable_bitmap) {
+        m_image_context_menu_url = image_url;
+        m_image_context_menu_bitmap = shareable_bitmap;
+        m_image_context_menu->popup(screen_position);
     };
 
     hooks().on_link_middle_click = [this](auto& href, auto&, auto) {
@@ -217,7 +251,7 @@ Tab::Tab(Type type)
         },
         this);
 
-    m_statusbar = widget.add<GUI::StatusBar>();
+    m_statusbar = static_cast<GUI::StatusBar&>(*find_descendant_by_name("statusbar"));
 
     hooks().on_link_hover = [this](auto& url) {
         if (url.is_valid())
@@ -470,7 +504,7 @@ void Tab::did_become_active()
             m_statusbar->set_text("");
             return;
         }
-        m_statusbar->set_text(String::format("Loading (%d pending resources...)", Web::ResourceLoader::the().pending_loads()));
+        m_statusbar->set_text(String::formatted("Loading ({} pending resources...)", Web::ResourceLoader::the().pending_loads()));
     };
 
     BookmarksBarWidget::the().on_bookmark_click = [this](auto& url, unsigned modifiers) {
@@ -512,4 +546,5 @@ Web::WebViewHooks& Tab::hooks()
         return *m_page_view;
     return *m_web_content_view;
 }
+
 }

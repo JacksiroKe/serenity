@@ -24,7 +24,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
@@ -34,43 +33,45 @@
 namespace JS {
 
 ProxyConstructor::ProxyConstructor(GlobalObject& global_object)
-    : NativeFunction("Proxy", *global_object.function_prototype())
+    : NativeFunction(vm().names.Proxy, *global_object.function_prototype())
 {
 }
 
 void ProxyConstructor::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property("prototype", global_object.proxy_prototype(), 0);
-    define_property("length", Value(2), Attribute::Configurable);
+    define_property(vm.names.prototype, global_object.proxy_prototype(), 0);
+    define_property(vm.names.length, Value(2), Attribute::Configurable);
 }
 
 ProxyConstructor::~ProxyConstructor()
 {
 }
 
-Value ProxyConstructor::call(Interpreter& interpreter)
+Value ProxyConstructor::call()
 {
-    interpreter.throw_exception<TypeError>(ErrorType::ProxyCallWithNew);
+    vm().throw_exception<TypeError>(global_object(), ErrorType::ProxyCallWithNew);
     return {};
 }
 
-Value ProxyConstructor::construct(Interpreter& interpreter, Function&)
+Value ProxyConstructor::construct(Function&)
 {
-    if (interpreter.argument_count() < 2) {
-        interpreter.throw_exception<TypeError>(ErrorType::ProxyTwoArguments);
+    auto& vm = this->vm();
+    if (vm.argument_count() < 2) {
+        vm.throw_exception<TypeError>(global_object(), ErrorType::ProxyTwoArguments);
         return {};
     }
 
-    auto target = interpreter.argument(0);
-    auto handler = interpreter.argument(1);
+    auto target = vm.argument(0);
+    auto handler = vm.argument(1);
 
     if (!target.is_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::ProxyConstructorBadType, "target", target.to_string_without_side_effects().characters());
+        vm.throw_exception<TypeError>(global_object(), ErrorType::ProxyConstructorBadType, "target", target.to_string_without_side_effects());
         return {};
     }
     if (!handler.is_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::ProxyConstructorBadType, "handler", handler.to_string_without_side_effects().characters());
+        vm.throw_exception<TypeError>(global_object(), ErrorType::ProxyConstructorBadType, "handler", handler.to_string_without_side_effects());
         return {};
     }
     return ProxyObject::create(global_object(), target.as_object(), handler.as_object());

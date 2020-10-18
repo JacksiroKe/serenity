@@ -1,6 +1,7 @@
 set(SOURCES
     AST.cpp
     Console.cpp
+    Heap/Allocator.cpp
     Heap/Handle.cpp
     Heap/HeapBlock.cpp
     Heap/Heap.cpp
@@ -72,6 +73,7 @@ set(SOURCES
     Runtime/SymbolObject.cpp
     Runtime/SymbolPrototype.cpp
     Runtime/Uint8ClampedArray.cpp
+    Runtime/VM.cpp
     Runtime/Value.cpp
     Token.cpp
 )

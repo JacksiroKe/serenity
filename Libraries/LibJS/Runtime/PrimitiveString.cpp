@@ -24,9 +24,8 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Heap/Heap.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/PrimitiveString.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
@@ -41,12 +40,14 @@ PrimitiveString::~PrimitiveString()
 
 PrimitiveString* js_string(Heap& heap, String string)
 {
+    if (string.is_empty())
+        return &heap.vm().empty_string();
     return heap.allocate_without_global_object<PrimitiveString>(move(string));
 }
 
-PrimitiveString* js_string(Interpreter& interpreter, String string)
+PrimitiveString* js_string(VM& vm, String string)
 {
-    return js_string(interpreter.heap(), string);
+    return js_string(vm.heap(), move(string));
 }
 
 }

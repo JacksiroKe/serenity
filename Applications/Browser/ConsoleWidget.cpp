@@ -36,9 +36,9 @@
 #include <LibJS/Runtime/Error.h>
 #include <LibWeb/DOM/DocumentType.h>
 #include <LibWeb/DOM/ElementFactory.h>
-#include <LibWeb/HTML/HTMLBodyElement.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/DOMTreeModel.h>
+#include <LibWeb/HTML/HTMLBodyElement.h>
 
 namespace Browser {
 
@@ -91,10 +91,10 @@ ConsoleWidget::ConsoleWidget()
             auto error = parser.errors()[0];
             auto hint = error.source_location_hint(js_source);
             if (!hint.is_empty())
-                output_html.append(String::format("<pre>%s</pre>", escape_html_entities(hint).characters()));
-            m_interpreter->throw_exception<JS::SyntaxError>(error.to_string());
+                output_html.append(String::formatted("<pre>{}</pre>", escape_html_entities(hint)));
+            m_interpreter->vm().throw_exception<JS::SyntaxError>(m_interpreter->global_object(), error.to_string());
         } else {
-            m_interpreter->run(m_interpreter->global_object(),*program);
+            m_interpreter->run(m_interpreter->global_object(), *program);
         }
 
         if (m_interpreter->exception()) {
@@ -102,11 +102,11 @@ ConsoleWidget::ConsoleWidget()
             output_html.append(JS::MarkupGenerator::html_from_value(m_interpreter->exception()->value()));
             print_html(output_html.string_view());
 
-            m_interpreter->clear_exception();
+            m_interpreter->vm().clear_exception();
             return;
         }
 
-        print_html(JS::MarkupGenerator::html_from_value(m_interpreter->last_value()));
+        print_html(JS::MarkupGenerator::html_from_value(m_interpreter->vm().last_value()));
     };
 
     auto& clear_button = bottom_container.add<GUI::Button>();
@@ -129,8 +129,8 @@ void ConsoleWidget::set_interpreter(WeakPtr<JS::Interpreter> interpreter)
         return;
 
     m_interpreter = interpreter;
-    m_console_client = adopt_own(*new BrowserConsoleClient(interpreter->console(), *this));
-    interpreter->console().set_client(*m_console_client.ptr());
+    m_console_client = make<BrowserConsoleClient>(interpreter->global_object().console(), *this);
+    interpreter->global_object().console().set_client(*m_console_client.ptr());
 
     clear_output();
 }

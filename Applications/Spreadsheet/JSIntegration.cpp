@@ -46,6 +46,12 @@ SheetGlobalObject::~SheetGlobalObject()
 JS::Value SheetGlobalObject::get(const JS::PropertyName& name, JS::Value receiver) const
 {
     if (name.is_string()) {
+        if (name.as_string() == "value") {
+            if (auto cell = m_sheet.current_evaluated_cell())
+                return cell->js_data();
+
+            return JS::js_undefined();
+        }
         if (auto pos = Sheet::parse_cell_name(name.as_string()); pos.has_value()) {
             auto& cell = m_sheet.ensure(pos.value());
             cell.reference_from(m_sheet.current_evaluated_cell());
@@ -76,26 +82,57 @@ void SheetGlobalObject::initialize()
 {
     GlobalObject::initialize();
     define_native_function("parse_cell_name", parse_cell_name, 1);
+    define_native_function("current_cell_position", current_cell_position, 0);
 }
 
 JS_DEFINE_NATIVE_FUNCTION(SheetGlobalObject::parse_cell_name)
 {
-    if (interpreter.argument_count() != 1) {
-        interpreter.throw_exception<JS::TypeError>("Expected exactly one argument to parse_cell_name()");
+    if (vm.argument_count() != 1) {
+        vm.throw_exception<JS::TypeError>(global_object, "Expected exactly one argument to parse_cell_name()");
         return {};
     }
-    auto name_value = interpreter.argument(0);
+    auto name_value = vm.argument(0);
     if (!name_value.is_string()) {
-        interpreter.throw_exception<JS::TypeError>("Expected a String argument to parse_cell_name()");
+        vm.throw_exception<JS::TypeError>(global_object, "Expected a String argument to parse_cell_name()");
         return {};
     }
     auto position = Sheet::parse_cell_name(name_value.as_string().string());
     if (!position.has_value())
         return JS::js_undefined();
 
-    auto object = JS::Object::create_empty(interpreter.global_object());
-    object->put("column", JS::js_string(interpreter, position.value().column));
+    auto object = JS::Object::create_empty(global_object);
+    object->put("column", JS::js_string(vm, position.value().column));
     object->put("row", JS::Value((unsigned)position.value().row));
+
+    return object;
+}
+
+JS_DEFINE_NATIVE_FUNCTION(SheetGlobalObject::current_cell_position)
+{
+    if (vm.argument_count() != 0) {
+        vm.throw_exception<JS::TypeError>(global_object, "Expected no arguments to current_cell_position()");
+        return {};
+    }
+
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
+    if (!this_object)
+        return JS::js_null();
+
+    if (StringView("SheetGlobalObject") != this_object->class_name()) {
+        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, "SheetGlobalObject");
+        return {};
+    }
+
+    auto sheet_object = static_cast<SheetGlobalObject*>(this_object);
+    auto* current_cell = sheet_object->m_sheet.current_evaluated_cell();
+    if (!current_cell)
+        return JS::js_null();
+
+    auto position = current_cell->position();
+
+    auto object = JS::Object::create_empty(global_object);
+    object->put("column", JS::js_string(vm, position.column));
+    object->put("row", JS::Value((unsigned)position.row));
 
     return object;
 }
@@ -118,22 +155,22 @@ void WorkbookObject::initialize(JS::GlobalObject& global_object)
 
 JS_DEFINE_NATIVE_FUNCTION(WorkbookObject::sheet)
 {
-    if (interpreter.argument_count() != 1) {
-        interpreter.throw_exception<JS::TypeError>("Expected exactly one argument to sheet()");
+    if (vm.argument_count() != 1) {
+        vm.throw_exception<JS::TypeError>(global_object, "Expected exactly one argument to sheet()");
         return {};
     }
-    auto name_value = interpreter.argument(0);
+    auto name_value = vm.argument(0);
     if (!name_value.is_string() && !name_value.is_number()) {
-        interpreter.throw_exception<JS::TypeError>("Expected a String or Number argument to sheet()");
+        vm.throw_exception<JS::TypeError>(global_object, "Expected a String or Number argument to sheet()");
         return {};
     }
 
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
 
     if (!this_object->inherits("WorkbookObject")) {
-        interpreter.throw_exception<JS::TypeError>(JS::ErrorType::NotA, "WorkbookObject");
+        vm.throw_exception<JS::TypeError>(global_object, JS::ErrorType::NotA, "WorkbookObject");
         return {};
     }
 

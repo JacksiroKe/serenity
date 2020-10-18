@@ -26,11 +26,11 @@
 
 #include <LibGUI/DisplayLink.h>
 #include <LibGUI/MessageBox.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Function.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Timer.h>
 #include <LibWeb/DOM/Window.h>
+#include <LibWeb/HighResolutionTime/Performance.h>
 #include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Page/Frame.h>
 
@@ -43,6 +43,7 @@ NonnullRefPtr<Window> Window::create_with_document(Document& document)
 
 Window::Window(Document& document)
     : m_document(document)
+    , m_performance(make<HighResolutionTime::Performance>(*this))
 {
 }
 
@@ -57,7 +58,9 @@ void Window::set_wrapper(Badge<Bindings::WindowObject>, Bindings::WindowObject& 
 
 void Window::alert(const String& message)
 {
-    GUI::MessageBox::show(nullptr, message, "Alert", GUI::MessageBox::Type::Information);
+    if (!m_document.frame())
+        return;
+    m_document.frame()->page().client().page_did_request_alert(message);
 }
 
 bool Window::confirm(const String& message)
@@ -84,6 +87,7 @@ void Window::timer_did_fire(Badge<Timer>, Timer& timer)
 {
     // We should not be here if there's no JS wrapper for the Window object.
     ASSERT(wrapper());
+    auto& vm = wrapper()->vm();
 
     // NOTE: This protector pointer keeps the timer alive until the end of this function no matter what.
     NonnullRefPtr protector(timer);
@@ -92,10 +96,9 @@ void Window::timer_did_fire(Badge<Timer>, Timer& timer)
         m_timers.remove(timer.id());
     }
 
-    auto& interpreter = wrapper()->interpreter();
-    (void)interpreter.call(timer.callback(), wrapper());
-    if (interpreter.exception())
-        interpreter.clear_exception();
+    (void)vm.call(timer.callback(), wrapper());
+    if (vm.exception())
+        vm.clear_exception();
 }
 
 i32 Window::allocate_timer_id(Badge<Timer>)
@@ -120,11 +123,11 @@ i32 Window::request_animation_frame(JS::Function& callback)
 
     i32 link_id = GUI::DisplayLink::register_callback([handle = make_handle(&callback)](i32 link_id) {
         auto& function = const_cast<JS::Function&>(static_cast<const JS::Function&>(*handle.cell()));
-        auto& interpreter = function.interpreter();
+        auto& vm = function.vm();
         fake_timestamp += 10;
-        (void)interpreter.call(function, {}, JS::Value(fake_timestamp));
-        if (interpreter.exception())
-            interpreter.clear_exception();
+        (void)vm.call(function, {}, JS::Value(fake_timestamp));
+        if (vm.exception())
+            vm.clear_exception();
         GUI::DisplayLink::unregister_callback(link_id);
     });
 

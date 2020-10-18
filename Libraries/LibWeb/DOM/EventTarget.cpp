@@ -24,12 +24,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <LibWeb/Bindings/ScriptExecutionContext.h>
 #include <LibWeb/DOM/EventListener.h>
 #include <LibWeb/DOM/EventTarget.h>
 
 namespace Web::DOM {
 
-EventTarget::EventTarget()
+EventTarget::EventTarget(Bindings::ScriptExecutionContext& script_execution_context)
+    : m_script_execution_context(&script_execution_context)
 {
 }
 

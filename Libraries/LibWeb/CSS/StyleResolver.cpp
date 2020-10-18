@@ -57,10 +57,23 @@ static StyleSheet& default_stylesheet()
     return *sheet;
 }
 
+static StyleSheet& quirks_mode_stylesheet()
+{
+    static StyleSheet* sheet;
+    if (!sheet) {
+        extern const char quirks_mode_stylesheet_source[];
+        String css = quirks_mode_stylesheet_source;
+        sheet = parse_css(CSS::ParsingContext(), css).leak_ref();
+    }
+    return *sheet;
+}
+
 template<typename Callback>
 void StyleResolver::for_each_stylesheet(Callback callback) const
 {
     callback(default_stylesheet());
+    if (document().in_quirks_mode())
+        callback(quirks_mode_stylesheet());
     for (auto& sheet : document().style_sheets().sheets()) {
         callback(sheet);
     }
@@ -385,19 +398,27 @@ static void set_property_expanding_shorthands(StyleProperties& style, CSS::Prope
             if (!value.is_string())
                 continue;
             auto string = value.to_string();
-            if (!string.starts_with("url("))
-                continue;
-            if (!string.ends_with(')'))
-                continue;
-            auto url = string.substring_view(4, string.length() - 5);
-            if (url.length() >= 2 && url.starts_with('"') && url.ends_with('"'))
-                url = url.substring_view(1, url.length() - 2);
-            else if (url.length() >= 2 && url.starts_with('\'') && url.ends_with('\''))
-                url = url.substring_view(1, url.length() - 2);
-
-            auto background_image_value = ImageStyleValue::create(document.complete_url(url), document);
-            style.set_property(CSS::PropertyID::BackgroundImage, move(background_image_value));
+            set_property_expanding_shorthands(style, CSS::PropertyID::BackgroundImage, value, document);
         }
+        return;
+    }
+
+    if (property_id == CSS::PropertyID::BackgroundImage) {
+        if (!value.is_string())
+            return;
+        auto string = value.to_string();
+        if (!string.starts_with("url("))
+            return;
+        if (!string.ends_with(')'))
+            return;
+        auto url = string.substring_view(4, string.length() - 5);
+        if (url.length() >= 2 && url.starts_with('"') && url.ends_with('"'))
+            url = url.substring_view(1, url.length() - 2);
+        else if (url.length() >= 2 && url.starts_with('\'') && url.ends_with('\''))
+            url = url.substring_view(1, url.length() - 2);
+
+        auto background_image_value = ImageStyleValue::create(document.complete_url(url), document);
+        style.set_property(CSS::PropertyID::BackgroundImage, move(background_image_value));
         return;
     }
 

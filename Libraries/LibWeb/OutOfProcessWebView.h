@@ -46,6 +46,9 @@ public:
     URL url() const { return m_url; }
     void load(const URL&);
 
+    void load_html(const StringView&, const URL&);
+    void load_empty_document();
+
     void notify_server_did_layout(Badge<WebContentClient>, const Gfx::IntSize& content_size);
     void notify_server_did_paint(Badge<WebContentClient>, i32 shbuf_id);
     void notify_server_did_invalidate_content_rect(Badge<WebContentClient>, const Gfx::IntRect&);
@@ -59,6 +62,7 @@ public:
     void notify_server_did_start_loading(Badge<WebContentClient>, const URL&);
     void notify_server_did_request_context_menu(Badge<WebContentClient>, const Gfx::IntPoint&);
     void notify_server_did_request_link_context_menu(Badge<WebContentClient>, const Gfx::IntPoint&, const URL&, const String& target, unsigned modifiers);
+    void notify_server_did_request_alert(Badge<WebContentClient>, const String& message);
 
 private:
     OutOfProcessWebView();
@@ -71,6 +75,7 @@ private:
     virtual void mouseup_event(GUI::MouseEvent&) override;
     virtual void mousemove_event(GUI::MouseEvent&) override;
     virtual void keydown_event(GUI::KeyEvent&) override;
+    virtual void theme_change_event(GUI::ThemeChangeEvent&) override;
 
     // ^ScrollableWidget
     virtual void did_scroll() override;

@@ -24,6 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "DesktopWidget.h"
 #include "DirectoryView.h"
 #include "FileUtils.h"
 #include "PropertiesDialog.h"
@@ -41,6 +42,7 @@
 #include <LibGUI/BoxLayout.h>
 #include <LibGUI/Clipboard.h>
 #include <LibGUI/Desktop.h>
+#include <LibGUI/FileIconProvider.h>
 #include <LibGUI/FileSystemModel.h>
 #include <LibGUI/InputBox.h>
 #include <LibGUI/Label.h>
@@ -66,20 +68,10 @@
 #include <string.h>
 #include <unistd.h>
 
+using namespace FileManager;
+
 static int run_in_desktop_mode(RefPtr<Core::ConfigFile>);
 static int run_in_windowed_mode(RefPtr<Core::ConfigFile>, String initial_location);
-
-static Gfx::Bitmap& folder_icon()
-{
-    static RefPtr<Gfx::Bitmap> icon = Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-folder.png");
-    return *icon;
-}
-
-static Gfx::Bitmap& home_directory_icon()
-{
-    static RefPtr<Gfx::Bitmap> icon = Gfx::Bitmap::load_from_file("/res/icons/16x16/home-directory.png");
-    return *icon;
-}
 
 int main(int argc, char** argv)
 {
@@ -131,22 +123,6 @@ int main(int argc, char** argv)
     return run_in_windowed_mode(move(config), initial_location);
 }
 
-class DesktopWidget final : public GUI::Widget {
-    C_OBJECT(DesktopWidget);
-
-private:
-    virtual void paint_event(GUI::PaintEvent& event) override
-    {
-        GUI::Painter painter(*this);
-        painter.add_clip_rect(event.rect());
-        painter.clear_rect(event.rect(), Color(0, 0, 0, 0));
-    }
-
-    DesktopWidget()
-    {
-    }
-};
-
 int run_in_desktop_mode(RefPtr<Core::ConfigFile> config)
 {
     static constexpr const char* process_name = "FileManager (Desktop)";
@@ -159,7 +135,7 @@ int run_in_desktop_mode(RefPtr<Core::ConfigFile> config)
     window->set_window_type(GUI::WindowType::Desktop);
     window->set_has_alpha_channel(true);
 
-    auto& desktop_widget = window->set_main_widget<DesktopWidget>();
+    auto& desktop_widget = window->set_main_widget<FileManager::DesktopWidget>();
     desktop_widget.set_layout<GUI::VerticalBoxLayout>();
 
     auto& directory_view = desktop_widget.add<DirectoryView>(DirectoryView::Mode::Desktop);
@@ -181,6 +157,7 @@ int run_in_desktop_mode(RefPtr<Core::ConfigFile> config)
     desktop_view_context_menu->add_separator();
 
     desktop_view_context_menu->add_action(file_manager_action);
+    desktop_view_context_menu->add_action(directory_view.open_terminal_action());
     desktop_view_context_menu->add_separator();
     desktop_view_context_menu->add_action(display_properties_action);
 
@@ -207,8 +184,8 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
     auto left = config->read_num_entry("Window", "Left", 150);
     auto top = config->read_num_entry("Window", "Top", 75);
     auto width = config->read_num_entry("Window", "Width", 640);
-    auto heigth = config->read_num_entry("Window", "Heigth", 480);
-    window->set_rect({ left, top, width, heigth });
+    auto height = config->read_num_entry("Window", "Height", 480);
+    window->set_rect({ left, top, width, height });
 
     auto& widget = window->set_main_widget<GUI::Widget>();
     widget.set_layout<GUI::VerticalBoxLayout>();
@@ -230,7 +207,7 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
 
     auto& splitter = widget.add<GUI::HorizontalSplitter>();
     auto& tree_view = splitter.add<GUI::TreeView>();
-    auto directories_model = GUI::FileSystemModel::create("/", GUI::FileSystemModel::Mode::DirectoriesOnly);
+    auto directories_model = GUI::FileSystemModel::create({}, GUI::FileSystemModel::Mode::DirectoriesOnly);
     tree_view.set_model(directories_model);
     tree_view.set_column_hidden(GUI::FileSystemModel::Column::Icon, true);
     tree_view.set_column_hidden(GUI::FileSystemModel::Column::Size, true);
@@ -242,7 +219,12 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
     tree_view.set_column_hidden(GUI::FileSystemModel::Column::SymlinkTarget, true);
     tree_view.set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
     tree_view.set_preferred_size(150, 0);
+    bool is_reacting_to_tree_view_selection_change = false;
+
     auto& directory_view = splitter.add<DirectoryView>(DirectoryView::Mode::Normal);
+
+    // Open the root directory. FIXME: This is awkward.
+    tree_view.toggle_index(directories_model->index(0, 0, {}));
 
     auto& statusbar = widget.add<GUI::StatusBar>();
 
@@ -276,7 +258,7 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         // Reselect the existing folder in the tree.
         auto new_index = directories_model->index(current_path, GUI::FileSystemModel::Column::Name);
         tree_view.selection().set(new_index);
-        tree_view.scroll_into_view(new_index, Orientation::Vertical);
+        tree_view.scroll_into_view(new_index, false, true);
         tree_view.update();
 
         directory_view.refresh();
@@ -289,21 +271,6 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
 
     auto open_parent_directory_action = GUI::Action::create("Open parent directory", { Mod_Alt, Key_Up }, Gfx::Bitmap::load_from_file("/res/icons/16x16/open-parent-directory.png"), [&](const GUI::Action&) {
         directory_view.open_parent_directory();
-    });
-
-    auto open_terminal_action = GUI::Action::create("Open Terminal here...", Gfx::Bitmap::load_from_file("/res/icons/16x16/app-terminal.png"), [&](const GUI::Action&) {
-        posix_spawn_file_actions_t spawn_actions;
-        posix_spawn_file_actions_init(&spawn_actions);
-        posix_spawn_file_actions_addchdir(&spawn_actions, directory_view.path().characters());
-        pid_t pid;
-        const char* argv[] = { "Terminal", nullptr };
-        if ((errno = posix_spawn(&pid, "/bin/Terminal", &spawn_actions, nullptr, const_cast<char**>(argv), environ))) {
-            perror("posix_spawn");
-        } else {
-            if (disown(pid) < 0)
-                perror("disown");
-        }
-        posix_spawn_file_actions_destroy(&spawn_actions);
     });
 
     RefPtr<GUI::Action> view_as_table_action;
@@ -366,7 +333,7 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
             StringBuilder copy_text;
             for (auto& path : paths) {
                 auto url = URL::create_with_file_protocol(path);
-                copy_text.appendf("%s\n", url.to_string().characters());
+                copy_text.appendff("{}\n", url);
             }
             GUI::Clipboard::the().set_data(copy_text.build().bytes(), "text/uri-list");
         },
@@ -400,20 +367,15 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
             },
             window);
 
-    enum class ConfirmBeforeDelete {
-        No,
-        Yes
-    };
-
     auto do_paste = [&](const GUI::Action& action) {
         auto data_and_type = GUI::Clipboard::the().data_and_type();
         if (data_and_type.mime_type != "text/uri-list") {
-            dbg() << "Cannot paste clipboard type " << data_and_type.mime_type;
+            dbgln("Cannot paste clipboard type {}", data_and_type.mime_type);
             return;
         }
         auto copied_lines = String::copy(data_and_type.data).split('\n');
         if (copied_lines.is_empty()) {
-            dbg() << "No files to paste";
+            dbgln("No files to paste");
             return;
         }
 
@@ -428,78 +390,16 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
                 continue;
             URL url = uri_as_string;
             if (!url.is_valid() || url.protocol() != "file") {
-                dbg() << "Cannot paste URI " << uri_as_string;
+                dbgln("Cannot paste URI {}", uri_as_string);
                 continue;
             }
 
-            auto new_path = String::format("%s/%s", target_directory.characters(), url.basename().characters());
+            auto new_path = String::formatted("{}/{}", target_directory, url.basename());
             if (!FileUtils::copy_file_or_directory(url.path(), new_path)) {
-                auto error_message = String::format("Could not paste %s.", url.path().characters());
+                auto error_message = String::formatted("Could not paste {}.", url.path());
                 GUI::MessageBox::show(window, error_message, "File Manager", GUI::MessageBox::Type::Error);
             } else {
                 refresh_tree_view();
-            }
-        }
-    };
-
-    auto do_delete = [&](ConfirmBeforeDelete confirm, const GUI::Action&) {
-        auto paths = directory_view.selected_file_paths();
-
-        if (!paths.size())
-            paths = tree_view_selected_file_paths();
-
-        if (paths.is_empty())
-            ASSERT_NOT_REACHED();
-
-        String message;
-        if (paths.size() == 1) {
-            message = String::format("Really delete %s?", LexicalPath(paths[0]).basename().characters());
-        } else {
-            message = String::format("Really delete %d files?", paths.size());
-        }
-
-        if (confirm == ConfirmBeforeDelete::Yes) {
-            auto result = GUI::MessageBox::show(window,
-                message,
-                "Confirm deletion",
-                GUI::MessageBox::Type::Warning,
-                GUI::MessageBox::InputType::OKCancel);
-            if (result == GUI::MessageBox::ExecCancel)
-                return;
-        }
-
-        for (auto& path : paths) {
-            struct stat st;
-            if (lstat(path.characters(), &st)) {
-                GUI::MessageBox::show(window,
-                    String::format("lstat(%s) failed: %s", path.characters(), strerror(errno)),
-                    "Delete failed",
-                    GUI::MessageBox::Type::Error);
-                break;
-            } else {
-                refresh_tree_view();
-            }
-
-            if (S_ISDIR(st.st_mode)) {
-                String error_path;
-                int error = FileUtils::delete_directory(path, error_path);
-
-                if (error) {
-                    GUI::MessageBox::show(window,
-                        String::format("Failed to delete directory \"%s\": %s", error_path.characters(), strerror(error)),
-                        "Delete failed",
-                        GUI::MessageBox::Type::Error);
-                    break;
-                } else {
-                    refresh_tree_view();
-                }
-            } else if (unlink(path.characters()) < 0) {
-                int saved_errno = errno;
-                GUI::MessageBox::show(window,
-                    String::format("unlink(%s) failed: %s", path.characters(), strerror(saved_errno)),
-                    "Delete failed",
-                    GUI::MessageBox::Type::Error);
-                break;
             }
         }
     };
@@ -515,19 +415,6 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
             do_paste(action);
         },
         window);
-
-    auto force_delete_action = GUI::Action::create(
-        "Delete without confirmation", { Mod_Shift, Key_Delete }, [&](const GUI::Action& action) {
-            do_delete(ConfirmBeforeDelete::No, action);
-        },
-        window);
-
-    auto delete_action = GUI::CommonActions::make_delete_action(
-        [&](const GUI::Action& action) {
-            do_delete(ConfirmBeforeDelete::Yes, action);
-        },
-        window);
-    delete_action->set_enabled(false);
 
     auto go_back_action = GUI::CommonActions::make_go_back_action(
         [&](auto&) {
@@ -552,6 +439,21 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         paste_action->set_enabled(data_type == "text/uri-list" && access(current_location.characters(), W_OK) == 0);
     };
 
+    auto tree_view_delete_action = GUI::CommonActions::make_delete_action(
+        [&](auto&) {
+            FileUtils::delete_paths(tree_view_selected_file_paths(), true, window);
+        },
+        &tree_view);
+
+    // This is a little awkward. The menu action does something different depending on which view has focus.
+    // It would be nice to find a good abstraction for this instead of creating a branching action like this.
+    auto focus_dependent_delete_action = GUI::CommonActions::make_delete_action([&](auto&) {
+        if (tree_view.is_focused())
+            tree_view_delete_action->activate();
+        else
+            directory_view.delete_action().activate();
+    });
+
     auto menubar = GUI::MenuBar::construct();
 
     auto& app_menu = menubar->add_menu("File Manager");
@@ -559,8 +461,8 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
     app_menu.add_action(directory_view.touch_action());
     app_menu.add_action(copy_action);
     app_menu.add_action(paste_action);
-    app_menu.add_action(delete_action);
-    app_menu.add_action(open_terminal_action);
+    app_menu.add_action(focus_dependent_delete_action);
+    app_menu.add_action(directory_view.open_terminal_action());
     app_menu.add_separator();
     app_menu.add_action(properties_action);
     app_menu.add_separator();
@@ -568,14 +470,16 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         GUI::Application::the()->quit();
     }));
 
+    auto action_show_dotfiles = GUI::Action::create_checkable("Show dotfiles", { Mod_Ctrl, Key_H }, [&](auto& action) {
+        directory_view.set_should_show_dotfiles(action.is_checked());
+    });
+
     auto& view_menu = menubar->add_menu("View");
     view_menu.add_action(*view_as_icons_action);
     view_menu.add_action(*view_as_table_action);
     view_menu.add_action(*view_as_columns_action);
     view_menu.add_separator();
-    view_menu.add_action(GUI::Action::create_checkable("Show dotfiles", { Mod_Ctrl, Key_H }, [&](auto& action) {
-        directory_view.set_should_show_dotfiles(action.is_checked());
-    }));
+    view_menu.add_action(action_show_dotfiles);
 
     auto& go_menu = menubar->add_menu("Go");
     go_menu.add_action(go_back_action);
@@ -605,8 +509,8 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
     main_toolbar.add_action(directory_view.touch_action());
     main_toolbar.add_action(copy_action);
     main_toolbar.add_action(paste_action);
-    main_toolbar.add_action(delete_action);
-    main_toolbar.add_action(open_terminal_action);
+    main_toolbar.add_action(focus_dependent_delete_action);
+    main_toolbar.add_action(directory_view.open_terminal_action());
 
     main_toolbar.add_separator();
     main_toolbar.add_action(*view_as_icons_action);
@@ -614,22 +518,20 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
     main_toolbar.add_action(*view_as_columns_action);
 
     directory_view.on_path_change = [&](const String& new_path, bool can_write_in_path) {
-        const Gfx::Bitmap* icon = nullptr;
-        if (new_path == Core::StandardPaths::home_directory())
-            icon = &home_directory_icon();
-        else
-            icon = &folder_icon();
+        auto icon = GUI::FileIconProvider::icon_for_path(new_path);
+        auto* bitmap = icon.bitmap_for_size(16);
+        window->set_icon(bitmap);
+        location_textbox.set_icon(bitmap);
 
-        window->set_icon(icon);
-        location_textbox.set_icon(icon);
-
-        window->set_title(String::format("%s - File Manager", new_path.characters()));
+        window->set_title(String::formatted("{} - File Manager", new_path));
         location_textbox.set_text(new_path);
-        auto new_index = directories_model->index(new_path, GUI::FileSystemModel::Column::Name);
-        if (new_index.is_valid()) {
-            tree_view.selection().set(new_index);
-            tree_view.scroll_into_view(new_index, Orientation::Vertical);
-            tree_view.update();
+
+        if (!is_reacting_to_tree_view_selection_change) {
+            auto new_index = directories_model->index(new_path, GUI::FileSystemModel::Column::Name);
+            if (new_index.is_valid()) {
+                tree_view.expand_all_parents_of(new_index);
+                tree_view.set_cursor(new_index, GUI::AbstractView::SelectionUpdate::Set);
+            }
         }
 
         struct stat st;
@@ -642,14 +544,6 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         go_forward_action->set_enabled(directory_view.path_history_position() < directory_view.path_history_size() - 1);
         go_back_action->set_enabled(directory_view.path_history_position() > 0);
         open_parent_directory_action->set_enabled(new_path != "/");
-    };
-
-    directory_view.on_error = [&](int, const char* error_string, bool quit) {
-        auto error_message = String::format("Could not read directory: %s", error_string);
-        GUI::MessageBox::show(window, error_message, "File Manager", GUI::MessageBox::Type::Error);
-
-        if (quit)
-            exit(1);
     };
 
     directory_view.on_status_message = [&](const StringView& message) {
@@ -669,27 +563,27 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
     directory_view.on_selection_change = [&](GUI::AbstractView& view) {
         // FIXME: Figure out how we can enable/disable the paste action, based on clipboard contents.
         auto& selection = view.selection();
-
-        delete_action->set_enabled(!selection.is_empty() && access(directory_view.path().characters(), W_OK) == 0);
         copy_action->set_enabled(!selection.is_empty());
     };
 
     directory_context_menu->add_action(copy_action);
     directory_context_menu->add_action(folder_specific_paste_action);
-    directory_context_menu->add_action(delete_action);
+    directory_context_menu->add_action(directory_view.delete_action());
     directory_context_menu->add_separator();
     directory_context_menu->add_action(properties_action);
 
     directory_view_context_menu->add_action(directory_view.mkdir_action());
     directory_view_context_menu->add_action(directory_view.touch_action());
     directory_view_context_menu->add_action(paste_action);
-    directory_view_context_menu->add_action(open_terminal_action);
+    directory_view_context_menu->add_action(directory_view.open_terminal_action());
+    directory_view_context_menu->add_separator();
+    directory_view_context_menu->add_action(action_show_dotfiles);
     directory_view_context_menu->add_separator();
     directory_view_context_menu->add_action(properties_action);
 
     tree_view_directory_context_menu->add_action(copy_action);
     tree_view_directory_context_menu->add_action(paste_action);
-    tree_view_directory_context_menu->add_action(delete_action);
+    tree_view_directory_context_menu->add_action(tree_view_delete_action);
     tree_view_directory_context_menu->add_separator();
     tree_view_directory_context_menu->add_action(properties_action);
     tree_view_directory_context_menu->add_separator();
@@ -715,7 +609,7 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
                 file_context_menu = GUI::Menu::construct("Directory View File");
                 file_context_menu->add_action(copy_action);
                 file_context_menu->add_action(paste_action);
-                file_context_menu->add_action(delete_action);
+                file_context_menu->add_action(directory_view.delete_action());
 
                 file_context_menu->add_separator();
                 bool added_open_menu_items = false;
@@ -725,9 +619,9 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
                         directory_view.launch(URL::create_with_file_protocol(full_path), launcher_handler);
                     });
                     if (default_file_handler->details().launcher_type == Desktop::Launcher::LauncherType::Application)
-                        file_open_action->set_text(String::format("Run %s", file_open_action->text().characters()));
+                        file_open_action->set_text(String::formatted("Run {}", file_open_action->text()));
                     else
-                        file_open_action->set_text(String::format("Open in %s", file_open_action->text().characters()));
+                        file_open_action->set_text(String::formatted("Open in {}", file_open_action->text()));
 
                     file_context_menu_action_default_action = file_open_action;
 
@@ -760,40 +654,6 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         }
     };
 
-    directory_view.on_drop = [&](const GUI::ModelIndex& index, const GUI::DropEvent& event) {
-        if (!event.mime_data().has_urls())
-            return;
-        auto urls = event.mime_data().urls();
-        if (urls.is_empty()) {
-            dbg() << "No files to drop";
-            return;
-        }
-
-        auto& target_node = directory_view.node(index);
-        if (!target_node.is_directory())
-            return;
-
-        for (auto& url_to_copy : urls) {
-            if (!url_to_copy.is_valid() || url_to_copy.path() == target_node.full_path())
-                continue;
-            auto new_path = String::format("%s/%s",
-                target_node.full_path().characters(),
-                LexicalPath(url_to_copy.path()).basename().characters());
-
-            if (url_to_copy.path() == new_path)
-                continue;
-
-            if (!FileUtils::copy_file_or_directory(url_to_copy.path(), new_path)) {
-                auto error_message = String::format("Could not copy %s into %s.",
-                    url_to_copy.to_string().characters(),
-                    new_path.characters());
-                GUI::MessageBox::show(window, error_message, "File Manager", GUI::MessageBox::Type::Error);
-            } else {
-                refresh_tree_view();
-            }
-        }
-    };
-
     tree_view.on_selection = [&](const GUI::ModelIndex& index) {
         if (directories_model->m_previously_selected_index.is_valid())
             directories_model->update_node_on_selection(directories_model->m_previously_selected_index, false);
@@ -808,9 +668,10 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         auto path = directories_model->full_path(tree_view.selection().first());
         if (directory_view.path() == path)
             return;
+        TemporaryChange change(is_reacting_to_tree_view_selection_change, true);
         directory_view.open(path);
         copy_action->set_enabled(!tree_view.selection().is_empty());
-        delete_action->set_enabled(!tree_view.selection().is_empty());
+        directory_view.delete_action().set_enabled(!tree_view.selection().is_empty());
     };
 
     tree_view.on_context_menu_request = [&](const GUI::ModelIndex& index, const GUI::ContextMenuEvent& event) {
@@ -826,7 +687,7 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
 
     window->show();
 
-    // Read direcory read mode from config.
+    // Read directory read mode from config.
     auto dir_view_mode = config->read_entry("DirectoryView", "ViewMode", "Icon");
 
     if (dir_view_mode.contains("Table")) {
@@ -845,7 +706,7 @@ int run_in_windowed_mode(RefPtr<Core::ConfigFile> config, String initial_locatio
         config->write_num_entry("Window", "Left", window->x());
         config->write_num_entry("Window", "Top", window->y());
         config->write_num_entry("Window", "Width", window->width());
-        config->write_num_entry("Window", "Heigth", window->height());
+        config->write_num_entry("Window", "Height", window->height());
         config->sync();
 
         return GUI::Window::CloseRequestDecision::Close;

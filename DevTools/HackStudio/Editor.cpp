@@ -25,22 +25,29 @@
  */
 
 #include "Editor.h"
+#include "Debugger/Debugger.h"
 #include "EditorWrapper.h"
+#include "HackStudio.h"
+#include "Language.h"
 #include <AK/ByteBuffer.h>
 #include <AK/LexicalPath.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/File.h>
 #include <LibGUI/Application.h>
+#include <LibGUI/CppSyntaxHighlighter.h>
+#include <LibGUI/INISyntaxHighlighter.h>
+#include <LibGUI/JSSyntaxHighlighter.h>
 #include <LibGUI/Label.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/ScrollBar.h>
+#include <LibGUI/ShellSyntaxHighlighter.h>
 #include <LibGUI/SyntaxHighlighter.h>
 #include <LibGUI/Window.h>
 #include <LibMarkdown/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/Text.h>
 #include <LibWeb/HTML/HTMLHeadElement.h>
-#include <LibWeb/InProcessWebView.h>
+#include <LibWeb/OutOfProcessWebView.h>
 
 // #define EDITOR_DEBUG
 
@@ -48,10 +55,13 @@ namespace HackStudio {
 
 Editor::Editor()
 {
+    set_document(CodeDocument::create());
     m_documentation_tooltip_window = GUI::Window::construct();
     m_documentation_tooltip_window->set_rect(0, 0, 500, 400);
     m_documentation_tooltip_window->set_window_type(GUI::WindowType::Tooltip);
-    m_documentation_page_view = m_documentation_tooltip_window->set_main_widget<Web::InProcessWebView>();
+    m_documentation_page_view = m_documentation_tooltip_window->set_main_widget<Web::OutOfProcessWebView>();
+
+    m_autocomplete_box = make<AutoCompleteBox>(make_weak_ptr());
 }
 
 Editor::~Editor()
@@ -132,7 +142,7 @@ static HashMap<String, String>& man_paths()
         // FIXME: This should also search man3, possibly other places..
         Core::DirIterator it("/usr/share/man/man2", Core::DirIterator::Flags::SkipDots);
         while (it.has_next()) {
-            auto path = String::format("/usr/share/man/man2/%s", it.next_path().characters());
+            auto path = String::formatted("/usr/share/man/man2/{}", it.next_path());
             auto title = LexicalPath(path).title();
             paths.set(title, path);
         }
@@ -146,7 +156,7 @@ void Editor::show_documentation_tooltip_if_available(const String& hovered_token
     auto it = man_paths().find(hovered_token);
     if (it == man_paths().end()) {
 #ifdef EDITOR_DEBUG
-        dbg() << "no man path for " << hovered_token;
+        dbgln("no man path for {}", hovered_token);
 #endif
         m_documentation_tooltip_window->hide();
         return;
@@ -157,28 +167,29 @@ void Editor::show_documentation_tooltip_if_available(const String& hovered_token
     }
 
 #ifdef EDITOR_DEBUG
-    dbg() << "opening " << it->value;
+    dbgln("opening {}", it->value);
 #endif
     auto file = Core::File::construct(it->value);
     if (!file->open(Core::File::ReadOnly)) {
-        dbg() << "failed to open " << it->value << " " << file->error_string();
+        dbgln("failed to open {}, {}", it->value, file->error_string());
         return;
     }
 
     auto man_document = Markdown::Document::parse(file->read_all());
 
     if (!man_document) {
-        dbg() << "failed to parse markdown";
+        dbgln("failed to parse markdown");
         return;
     }
 
-    auto html_text = man_document->render_to_html();
-
-    m_documentation_page_view->load_html(html_text, {});
-
-    if (auto* document = m_documentation_page_view->document()) {
-        const_cast<Web::HTML::HTMLElement*>(document->body())->set_attribute(Web::HTML::AttributeNames::style, "background-color: #dac7b5;");
-    }
+    StringBuilder html;
+    // FIXME: With the InProcessWebView we used to manipulate the document body directly,
+    // With OutOfProcessWebView this isn't possible (at the moment). The ideal solution
+    // is probably to tweak Markdown::Document::render_to_html() so we can inject styles
+    // into the rendered HTML easily.
+    html.append(man_document->render_to_html());
+    html.append("<style>body { background-color: #dac7b5; }</style>");
+    m_documentation_page_view->load_html(html.build(), {});
 
     m_documentation_tooltip_window->move_to(screen_location.translated(4, 4));
     m_documentation_tooltip_window->show();
@@ -227,7 +238,7 @@ void Editor::mousemove_event(GUI::MouseEvent& event)
             adjusted_range.end().set_column(min(end_line_length, adjusted_range.end().column() + 1));
             auto hovered_span_text = document().text_in_range(adjusted_range);
 #ifdef EDITOR_DEBUG
-            dbg() << "Hovering: " << adjusted_range << " \"" << hovered_span_text << "\"";
+            dbgln("Hovering: {} \"{}\"", adjusted_range, hovered_span_text);
 #endif
 
             if (highlighter->is_navigatable(span.data)) {
@@ -265,10 +276,10 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
     if (event.button() == GUI::MouseButton::Left && event.position().x() < ruler_line_rect.width()) {
         if (!breakpoint_lines().contains_slow(text_position.line())) {
             breakpoint_lines().append(text_position.line());
-            on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Added);
+            Debugger::on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Added);
         } else {
             breakpoint_lines().remove_first_matching([&](size_t line) { return line == text_position.line(); });
-            on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Removed);
+            Debugger::on_breakpoint_change(wrapper().filename_label().text(), text_position.line(), BreakpointChange::Removed);
         }
     }
 
@@ -294,7 +305,7 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
             auto span_text = document().text_in_range(adjusted_range);
             auto header_path = span_text.substring(1, span_text.length() - 2);
 #ifdef EDITOR_DEBUG
-            dbg() << "Ctrl+click: " << adjusted_range << " \"" << header_path << "\"";
+            dbgln("Ctrl+click: {} \"{}\"", adjusted_range, header_path);
 #endif
             navigate_to_include_if_available(header_path);
             return;
@@ -306,9 +317,49 @@ void Editor::mousedown_event(GUI::MouseEvent& event)
 
 void Editor::keydown_event(GUI::KeyEvent& event)
 {
+    if (m_autocomplete_in_focus) {
+        if (event.key() == Key_Escape) {
+            m_autocomplete_in_focus = false;
+            m_autocomplete_box->close();
+            return;
+        }
+        if (event.key() == Key_Down) {
+            m_autocomplete_box->next_suggestion();
+            return;
+        }
+        if (event.key() == Key_Up) {
+            m_autocomplete_box->previous_suggestion();
+            return;
+        }
+        if (event.key() == Key_Return || event.key() == Key_Tab) {
+            m_autocomplete_box->apply_suggestion();
+            close_autocomplete();
+            return;
+        }
+    }
+
+    auto autocomplete_action = [this]() {
+        auto data = get_autocomplete_request_data();
+        if (data.has_value()) {
+            update_autocomplete(data.value());
+            if (m_autocomplete_in_focus)
+                show_autocomplete(data.value());
+        } else {
+            close_autocomplete();
+        }
+    };
+
     if (event.key() == Key_Control)
         m_holding_ctrl = true;
+
+    if (m_holding_ctrl && event.key() == Key_Space) {
+        autocomplete_action();
+    }
     GUI::TextEditor::keydown_event(event);
+
+    if (m_autocomplete_in_focus) {
+        autocomplete_action();
+    }
 }
 
 void Editor::keyup_event(GUI::KeyEvent& event)
@@ -341,7 +392,7 @@ static HashMap<String, String>& include_paths()
             if (!Core::File::is_directory(path)) {
                 auto key = path.substring(base.length() + 1, path.length() - base.length() - 1);
 #ifdef EDITOR_DEBUG
-                dbg() << "Adding header \"" << key << "\" in path \"" << path << "\"";
+                dbgln("Adding header \"{}\" in path \"{}\"", key, path);
 #endif
                 paths.set(key, path);
             } else {
@@ -365,7 +416,7 @@ void Editor::navigate_to_include_if_available(String path)
     auto it = include_paths().find(path);
     if (it == include_paths().end()) {
 #ifdef EDITOR_DEBUG
-        dbg() << "no header " << path << " found.";
+        dbgln("no header {} found.", path);
 #endif
         return;
     }
@@ -418,6 +469,122 @@ void Editor::set_document(GUI::TextDocument& doc)
 {
     ASSERT(doc.is_code_document());
     GUI::TextEditor::set_document(doc);
+
+    CodeDocument& code_document = static_cast<CodeDocument&>(doc);
+    switch (code_document.language()) {
+    case Language::Cpp:
+        set_syntax_highlighter(make<GUI::CppSyntaxHighlighter>());
+        m_language_client = get_language_client<LanguageClients::Cpp::ServerConnection>(project().root_directory());
+        break;
+    case Language::JavaScript:
+        set_syntax_highlighter(make<GUI::JSSyntaxHighlighter>());
+        break;
+    case Language::Ini:
+        set_syntax_highlighter(make<GUI::IniSyntaxHighlighter>());
+        break;
+    case Language::Shell:
+        set_syntax_highlighter(make<GUI::ShellSyntaxHighlighter>());
+        m_language_client = get_language_client<LanguageClients::Shell::ServerConnection>(project().root_directory());
+        break;
+    default:
+        set_syntax_highlighter(nullptr);
+    }
+
+    if (m_language_client)
+        m_language_client->open_file(code_document.file_path().string());
 }
 
+Optional<Editor::AutoCompleteRequestData> Editor::get_autocomplete_request_data()
+{
+    if (!wrapper().editor().m_language_client)
+        return {};
+
+    return Editor::AutoCompleteRequestData { cursor() };
+}
+
+void Editor::update_autocomplete(const AutoCompleteRequestData& data)
+{
+    if (!m_language_client)
+        return;
+
+    m_language_client->on_autocomplete_suggestions = [=, this](auto suggestions) {
+        if (suggestions.is_empty()) {
+            close_autocomplete();
+            return;
+        }
+
+        show_autocomplete(data);
+
+        m_autocomplete_box->update_suggestions(move(suggestions));
+        m_autocomplete_in_focus = true;
+    };
+
+    m_language_client->request_autocomplete(
+        code_document().file_path().string(),
+        data.position.line(),
+        data.position.column());
+}
+
+void Editor::show_autocomplete(const AutoCompleteRequestData& data)
+{
+    auto suggestion_box_location = content_rect_for_position(data.position).bottom_right().translated(screen_relative_rect().top_left().translated(ruler_width(), 0).translated(10, 5));
+    m_autocomplete_box->show(suggestion_box_location);
+}
+
+void Editor::close_autocomplete()
+{
+    m_autocomplete_box->close();
+    m_autocomplete_in_focus = false;
+}
+
+void Editor::on_edit_action(const GUI::Command& command)
+{
+    if (!m_language_client)
+        return;
+
+    if (command.is_insert_text()) {
+        const GUI::InsertTextCommand& insert_command = static_cast<const GUI::InsertTextCommand&>(command);
+        m_language_client->insert_text(
+            code_document().file_path().string(),
+            insert_command.text(),
+            insert_command.range().start().line(),
+            insert_command.range().start().column());
+        return;
+    }
+
+    if (command.is_remove_text()) {
+        const GUI::RemoveTextCommand& remove_command = static_cast<const GUI::RemoveTextCommand&>(command);
+        m_language_client->remove_text(
+            code_document().file_path().string(),
+            remove_command.range().start().line(),
+            remove_command.range().start().column(),
+            remove_command.range().end().line(),
+            remove_command.range().end().column());
+        return;
+    }
+
+    ASSERT_NOT_REACHED();
+}
+
+void Editor::undo()
+{
+    TextEditor::undo();
+    flush_file_content_to_langauge_server();
+}
+
+void Editor::redo()
+{
+    TextEditor::redo();
+    flush_file_content_to_langauge_server();
+}
+
+void Editor::flush_file_content_to_langauge_server()
+{
+    if (!m_language_client)
+        return;
+
+    m_language_client->set_file_content(
+        code_document().file_path().string(),
+        document().text());
+}
 }

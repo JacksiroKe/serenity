@@ -204,6 +204,12 @@ public:
     }
 
     size_t cursor() const { return m_cursor; }
+    void set_cursor(size_t cursor)
+    {
+        if (cursor > m_buffer.size())
+            cursor = m_buffer.size();
+        m_cursor = cursor;
+    }
     const Vector<u32, 1024>& buffer() const { return m_buffer; }
     u32 buffer_at(size_t pos) const { return m_buffer.at(pos); }
     String line() const { return line(m_buffer.size()); }
@@ -274,8 +280,8 @@ private:
         Retry
     };
 
-    // ^Core::Object
-    virtual void save_to(JsonObject&) override;
+    // FIXME: Port to Core::Property
+    void save_to(JsonObject&);
 
     struct KeyCallback {
         KeyCallback(Function<bool(Editor&)> cb)
@@ -471,8 +477,9 @@ private:
     enum class InputState {
         Free,
         GotEscape,
-        GotEscapeFollowedByLeftBracket,
-        ExpectTerminator,
+        CSIExpectParameter,
+        CSIExpectIntermediate,
+        CSIExpectFinal,
     };
     InputState m_state { InputState::Free };
 

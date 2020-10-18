@@ -26,10 +26,12 @@
 
 #include "Shell.h"
 #include "Execution.h"
+#include "Formatter.h"
 #include <AK/Function.h>
 #include <AK/LexicalPath.h>
 #include <AK/ScopeGuard.h>
 #include <AK/StringBuilder.h>
+#include <AK/TemporaryChange.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/DirIterator.h>
 #include <LibCore/Event.h>
@@ -47,14 +49,41 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
 static bool s_disable_hyperlinks = false;
-extern RefPtr<Line::Editor> editor;
 extern char** environ;
 
 //#define SH_DEBUG
+
+namespace Shell {
+
+// FIXME: This should eventually be removed once we've established that
+//        waitpid() is not passed the same job twice.
+#ifdef __serenity__
+#    define ENSURE_WAITID_ONCE
+#endif
+
+void Shell::setup_signals()
+{
+    Core::EventLoop::register_signal(SIGCHLD, [this](int) {
+#ifdef SH_DEBUG
+        dbg() << "SIGCHLD!";
+#endif
+        notify_child_event();
+    });
+
+    Core::EventLoop::register_signal(SIGTSTP, [this](auto) {
+        auto job = current_job();
+        kill_job(job, SIGTSTP);
+        if (job) {
+            job->set_is_suspended(true);
+            job->unblock();
+        }
+    });
+}
 
 void Shell::print_path(const String& path)
 {
@@ -195,8 +224,11 @@ Vector<StringView> Shell::split_path(const StringView& path)
 
 Vector<String> Shell::expand_globs(const StringView& path, StringView base)
 {
-    if (path.starts_with('/'))
+    auto explicitly_set_base = false;
+    if (path.starts_with('/')) {
         base = "/";
+        explicitly_set_base = true;
+    }
     auto parts = split_path(path);
     String base_string = base;
     struct stat statbuf;
@@ -214,6 +246,8 @@ Vector<String> Shell::expand_globs(const StringView& path, StringView base)
 
     auto results = expand_globs(move(parts), resolved_base);
 
+    if (explicitly_set_base && base == "/")
+        resolved_base = resolved_base.substring_view(1, resolved_base.length() - 1);
     for (auto& entry : results) {
         entry = entry.substring(resolved_base.length(), entry.length() - resolved_base.length());
         if (entry.is_empty())
@@ -287,8 +321,12 @@ Vector<AST::Command> Shell::expand_aliases(Vector<AST::Command> initial_commands
                         auto* ast = static_cast<AST::Execute*>(subcommand_ast.ptr());
                         subcommand_ast = ast->command();
                     }
-                    RefPtr<AST::Node> substitute = adopt(*new AST::Join(subcommand_ast->position(), subcommand_ast, adopt(*new AST::CommandLiteral(subcommand_ast->position(), command))));
-                    for (auto& subst_command : substitute->run(*this)->resolve_as_commands(*this)) {
+                    auto subcommand_nonnull = subcommand_ast.release_nonnull();
+                    NonnullRefPtr<AST::Node> substitute = adopt(*new AST::Join(subcommand_nonnull->position(),
+                        subcommand_nonnull,
+                        adopt(*new AST::CommandLiteral(subcommand_nonnull->position(), command))));
+                    auto res = substitute->run(*this);
+                    for (auto& subst_command : res->resolve_as_commands(*this)) {
                         if (!subst_command.argv.is_empty() && subst_command.argv.first() == argv0) // Disallow an alias resolving to itself.
                             commands.append(subst_command);
                         else
@@ -333,6 +371,33 @@ RefPtr<AST::Value> Shell::lookup_local_variable(const String& name)
     if (auto* frame = find_frame_containing_local_variable(name))
         return frame->local_variables.get(name).value();
 
+    if (auto index = name.to_uint(); index.has_value())
+        return get_argument(index.value());
+
+    return nullptr;
+}
+
+RefPtr<AST::Value> Shell::get_argument(size_t index)
+{
+    if (index == 0)
+        return adopt(*new AST::StringValue(current_script));
+
+    --index;
+    if (auto argv = lookup_local_variable("ARGV")) {
+        if (argv->is_list_without_resolution()) {
+            AST::ListValue* list = static_cast<AST::ListValue*>(argv.ptr());
+            if (list->values().size() <= index)
+                return nullptr;
+
+            return list->values().at(index);
+        }
+
+        if (index != 0)
+            return nullptr;
+
+        return argv;
+    }
+
     return nullptr;
 }
 
@@ -359,6 +424,69 @@ void Shell::unset_local_variable(const String& name)
 {
     if (auto* frame = find_frame_containing_local_variable(name))
         frame->local_variables.remove(name);
+}
+
+void Shell::define_function(String name, Vector<String> argnames, RefPtr<AST::Node> body)
+{
+    add_entry_to_cache(name);
+    m_functions.set(name, { name, move(argnames), move(body) });
+}
+
+bool Shell::has_function(const String& name)
+{
+    return m_functions.contains(name);
+}
+
+bool Shell::invoke_function(const AST::Command& command, int& retval)
+{
+    if (command.argv.is_empty())
+        return false;
+
+    StringView name = command.argv.first();
+
+    TemporaryChange<String> script_change { current_script, name };
+
+    auto function_option = m_functions.get(name);
+    if (!function_option.has_value())
+        return false;
+
+    auto& function = function_option.value();
+
+    if (!function.body) {
+        retval = 0;
+        return true;
+    }
+
+    if (command.argv.size() - 1 < function.arguments.size()) {
+        fprintf(stderr, "Shell: expected at least %zu arguments to %s, but got %zu\n", function.arguments.size(), function.name.characters(), command.argv.size() - 1);
+        retval = 1;
+        return true;
+    }
+
+    auto frame = push_frame();
+    size_t index = 0;
+    for (auto& arg : function.arguments) {
+        ++index;
+        set_local_variable(arg, adopt(*new AST::StringValue(command.argv[index])));
+    }
+
+    auto argv = command.argv;
+    argv.take_first();
+    set_local_variable("ARGV", adopt(*new AST::ListValue(move(argv))));
+
+    function.body->run(*this);
+
+    retval = last_return_code;
+    return true;
+}
+
+String Shell::format(const StringView& source, ssize_t& cursor) const
+{
+    Formatter formatter(source, cursor);
+    auto result = formatter.format();
+    cursor = formatter.cursor();
+
+    return result;
 }
 
 Shell::Frame Shell::push_frame()
@@ -398,6 +526,10 @@ bool Shell::is_runnable(const StringView& name)
 
 int Shell::run_command(const StringView& cmd)
 {
+    // The default-constructed mode of the shell
+    // should not be used for execution!
+    ASSERT(!m_default_constructed);
+
     if (cmd.is_empty())
         return 0;
 
@@ -510,11 +642,29 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
             return nullptr;
     }
 
-    int retval = 0;
-    if (run_builtin(command, rewirings, retval)) {
+    if (run_builtin(command, rewirings, last_return_code)) {
         for (auto& next_in_chain : command.next_chain)
-            run_tail(next_in_chain, retval);
+            run_tail(next_in_chain, last_return_code);
         return nullptr;
+    }
+
+    auto can_be_run_in_current_process = command.should_wait && !command.pipeline;
+    if (can_be_run_in_current_process && has_function(command.argv.first())) {
+        SavedFileDescriptors fds { rewirings };
+
+        for (auto& rewiring : rewirings) {
+            int rc = dup2(rewiring.dest_fd, rewiring.source_fd);
+            if (rc < 0) {
+                perror("dup2(run)");
+                return nullptr;
+            }
+        }
+
+        if (invoke_function(command, last_return_code)) {
+            for (auto& next_in_chain : command.next_chain)
+                run_tail(next_in_chain, last_return_code);
+            return nullptr;
+        }
     }
 
     Vector<const char*> argv;
@@ -570,18 +720,20 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
         if (!m_is_subshell && command.should_wait)
             tcsetattr(0, TCSANOW, &default_termios);
 
+        Core::EventLoop mainloop;
+        setup_signals();
+
         if (command.should_immediately_execute_next) {
             ASSERT(command.argv.is_empty());
-
-            Core::EventLoop mainloop;
-
-            setup_signals();
 
             for (auto& next_in_chain : command.next_chain)
                 run_tail(next_in_chain, 0);
 
             _exit(last_return_code);
         }
+
+        if (invoke_function(command, last_return_code))
+            _exit(last_return_code);
 
         int rc = execvp(argv[0], const_cast<char* const*>(argv.data()));
         if (rc < 0) {
@@ -622,12 +774,16 @@ RefPtr<Job> Shell::run_command(const AST::Command& command)
     }
 
     pid_t pgid = is_first ? child : (command.pipeline ? command.pipeline->pgid : child);
-    if (!m_is_subshell && command.should_wait) {
+    if ((!m_is_subshell && command.should_wait) || command.pipeline) {
         if (setpgid(child, pgid) < 0)
             perror("setpgid");
 
-        tcsetpgrp(STDOUT_FILENO, pgid);
-        tcsetpgrp(STDIN_FILENO, pgid);
+        if (!m_is_subshell) {
+            if (tcsetpgrp(STDOUT_FILENO, pgid) != 0)
+                perror("tcsetpgrp(OUT)");
+            if (tcsetpgrp(STDIN_FILENO, pgid) != 0)
+                perror("tcsetpgrp(IN)");
+        }
     }
 
     while (write(sync_pipe[1], "x", 1) < 0) {
@@ -748,6 +904,9 @@ NonnullRefPtrVector<Job> Shell::run_commands(Vector<AST::Command>& commands)
 
 bool Shell::run_file(const String& filename, bool explicitly_invoked)
 {
+    TemporaryChange script_change { current_script, filename };
+    TemporaryChange interactive_change { m_is_interactive, false };
+
     auto file_result = Core::File::open(filename, Core::File::ReadOnly);
     if (file_result.is_error()) {
         if (explicitly_invoked)
@@ -815,7 +974,7 @@ void Shell::load_history()
     while (history_file->can_read_line()) {
         auto b = history_file->read_line(1024);
         // skip the newline and terminating bytes
-        editor->add_to_history(String(reinterpret_cast<const char*>(b.data()), b.size() - 2));
+        m_editor->add_to_history(String(reinterpret_cast<const char*>(b.data()), b.size() - 2));
     }
 }
 
@@ -825,7 +984,7 @@ void Shell::save_history()
     if (file_or_error.is_error())
         return;
     auto& file = *file_or_error.value();
-    for (const auto& line : editor->history()) {
+    for (const auto& line : m_editor->history()) {
         file.write(line);
         file.write("\n");
     }
@@ -936,7 +1095,7 @@ void Shell::add_entry_to_cache(const String& entry)
     if (match)
         return;
 
-    while (strcmp(cached_path[index].characters(), entry.characters()) < 0) {
+    while (index < cached_path.size() && strcmp(cached_path[index].characters(), entry.characters()) < 0) {
         index++;
     }
     cached_path.insert(index, entry);
@@ -952,9 +1111,9 @@ void Shell::highlight(Line::Editor& editor) const
     ast->highlight_in_editor(editor, const_cast<Shell&>(*this));
 }
 
-Vector<Line::CompletionSuggestion> Shell::complete(const Line::Editor& editor)
+Vector<Line::CompletionSuggestion> Shell::complete()
 {
-    auto line = editor.line(editor.cursor());
+    auto line = m_editor->line(m_editor->cursor());
 
     Parser parser(line);
 
@@ -1006,7 +1165,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base, cons
     //      since we are not suggesting anything starting with
     //      `/foo/', but rather just `bar...'
     auto token_length = escape_token(token).length();
-    editor->suggest(token_length, original_token.length() - token_length);
+    if (m_editor)
+        m_editor->suggest(token_length, original_token.length() - token_length);
 
     // only suggest dot-files if path starts with a dot
     Core::DirIterator files(path,
@@ -1026,6 +1186,7 @@ Vector<Line::CompletionSuggestion> Shell::complete_path(const String& base, cons
                 } else {
                     suggestions.append({ escape_token(file), " " });
                 }
+                suggestions.last().input_offset = token_length;
             }
         }
     }
@@ -1043,7 +1204,9 @@ Vector<Line::CompletionSuggestion> Shell::complete_program_name(const String& na
         return complete_path("", name, offset);
 
     String completion = *match;
-    editor->suggest(escape_token(name).length(), 0);
+    auto token_length = escape_token(name).length();
+    if (m_editor)
+        m_editor->suggest(token_length, 0);
 
     // Now that we have a program name starting with our token, we look at
     // other program names starting with our token and cut off any mismatching
@@ -1054,11 +1217,14 @@ Vector<Line::CompletionSuggestion> Shell::complete_program_name(const String& na
     int index = match - cached_path.data();
     for (int i = index - 1; i >= 0 && cached_path[i].starts_with(name); --i) {
         suggestions.append({ cached_path[i], " " });
+        suggestions.last().input_offset = token_length;
     }
     for (size_t i = index + 1; i < cached_path.size() && cached_path[i].starts_with(name); ++i) {
         suggestions.append({ cached_path[i], " " });
+        suggestions.last().input_offset = token_length;
     }
     suggestions.append({ cached_path[index], " " });
+    suggestions.last().input_offset = token_length;
 
     return suggestions;
 }
@@ -1068,7 +1234,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_variable(const String& name, 
     Vector<Line::CompletionSuggestion> suggestions;
     auto pattern = offset ? name.substring_view(0, offset) : "";
 
-    editor->suggest(offset);
+    if (m_editor)
+        m_editor->suggest(offset);
 
     // Look at local variables.
     for (auto& frame : m_local_frames) {
@@ -1089,6 +1256,7 @@ Vector<Line::CompletionSuggestion> Shell::complete_variable(const String& name, 
             if (suggestions.contains_slow(name))
                 continue;
             suggestions.append(move(name));
+            suggestions.last().input_offset = offset;
         }
     }
 
@@ -1100,7 +1268,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_user(const String& name, size
     Vector<Line::CompletionSuggestion> suggestions;
     auto pattern = offset ? name.substring_view(0, offset) : "";
 
-    editor->suggest(offset);
+    if (m_editor)
+        m_editor->suggest(offset);
 
     Core::DirIterator di("/home", Core::DirIterator::SkipParentAndBaseDir);
 
@@ -1109,8 +1278,10 @@ Vector<Line::CompletionSuggestion> Shell::complete_user(const String& name, size
 
     while (di.has_next()) {
         String name = di.next_path();
-        if (name.starts_with(pattern))
+        if (name.starts_with(pattern)) {
             suggestions.append(name);
+            suggestions.last().input_offset = offset;
+        }
     }
 
     return suggestions;
@@ -1122,7 +1293,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_option(const String& program_
     while (start < option.length() && option[start] == '-' && start < 2)
         ++start;
     auto option_pattern = offset > start ? option.substring_view(start, offset - start) : "";
-    editor->suggest(offset);
+    if (m_editor)
+        m_editor->suggest(offset);
 
     Vector<Line::CompletionSuggestion> suggestions;
 
@@ -1146,9 +1318,11 @@ Vector<Line::CompletionSuggestion> Shell::complete_option(const String& program_
                 builder.append(view);
                 return builder.to_string();
             };
-#define __ENUMERATE_SHELL_OPTION(name, d_, descr_)        \
-    if (StringView { #name }.starts_with(option_pattern)) \
-        suggestions.append(maybe_negate(#name));
+#define __ENUMERATE_SHELL_OPTION(name, d_, descr_)          \
+    if (StringView { #name }.starts_with(option_pattern)) { \
+        suggestions.append(maybe_negate(#name));            \
+        suggestions.last().input_offset = offset;           \
+    }
 
             ENUMERATE_SHELL_OPTIONS();
 #undef __ENUMERATE_SHELL_OPTION
@@ -1161,8 +1335,8 @@ Vector<Line::CompletionSuggestion> Shell::complete_option(const String& program_
 void Shell::bring_cursor_to_beginning_of_a_line() const
 {
     struct winsize ws;
-    if (editor) {
-        ws = editor->terminal_size();
+    if (m_editor) {
+        ws = m_editor->terminal_size();
     } else {
         if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) < 0) {
             // Very annoying assumptions.
@@ -1194,7 +1368,7 @@ bool Shell::read_single_line()
 {
     restore_ios();
     bring_cursor_to_beginning_of_a_line();
-    auto line_result = editor->get_line(prompt());
+    auto line_result = m_editor->get_line(prompt());
 
     if (line_result.is_error()) {
         if (line_result.error() == Line::Editor::Error::Eof || line_result.error() == Line::Editor::Error::Empty) {
@@ -1220,7 +1394,7 @@ bool Shell::read_single_line()
 
     run_command(m_complete_line_builder.string_view());
 
-    editor->add_to_history(m_complete_line_builder.build());
+    m_editor->add_to_history(m_complete_line_builder.build());
     m_complete_line_builder.clear();
     return true;
 }
@@ -1234,7 +1408,117 @@ void Shell::custom_event(Core::CustomEvent& event)
     }
 }
 
+void Shell::notify_child_event()
+{
+#ifdef ENSURE_WAITID_ONCE
+    static HashTable<pid_t> s_waited_for_pids;
+#endif
+    Vector<u64> disowned_jobs;
+    // Workaround the fact that we can't receive *who* exactly changed state.
+    // The child might still be alive (and even running) when this signal is dispatched to us
+    // so just...repeat until we find a suitable child.
+    // This, of course, will mean that someone can send us a SIGCHILD and we'd be spinning here
+    // until the next child event we can actually handle.
+    bool found_child = false;
+    do {
+        // Ignore stray SIGCHLD when there are no jobs.
+        if (jobs.is_empty())
+            return;
+
+        for (auto& it : jobs) {
+            auto job_id = it.key;
+            auto& job = *it.value;
+#ifdef ENSURE_WAITID_ONCE
+            // Theoretically, this should never trip, as jobs are removed from
+            // the job table when waitpid() succeeds *and* the child is dead.
+            ASSERT(!s_waited_for_pids.contains(job.pid()));
+#endif
+
+            int wstatus = 0;
+#ifdef SH_DEBUG
+            dbgln("waitpid({}) = ...", job.pid());
+#endif
+            auto child_pid = waitpid(job.pid(), &wstatus, WNOHANG | WUNTRACED);
+#ifdef SH_DEBUG
+            dbgln("... = {} - {}", child_pid, wstatus);
+#endif
+
+            if (child_pid < 0) {
+                if (errno == ECHILD) {
+                    // The child process went away before we could process its death, just assume it exited all ok.
+                    // FIXME: This should never happen, the child should stay around until we do the waitpid above.
+                    dbg() << "Child process gone, cannot get exit code for " << job_id;
+                    child_pid = job.pid();
+                } else {
+                    ASSERT_NOT_REACHED();
+                }
+            }
+            if (child_pid == 0) {
+                // If the child existed, but wasn't dead.
+                continue;
+            }
+            if (child_pid == job.pid()) {
+                if (WIFSIGNALED(wstatus) && !WIFSTOPPED(wstatus)) {
+                    job.set_signalled(WTERMSIG(wstatus));
+                } else if (WIFEXITED(wstatus)) {
+                    job.set_has_exit(WEXITSTATUS(wstatus));
+                } else if (WIFSTOPPED(wstatus)) {
+                    job.unblock();
+                    job.set_is_suspended(true);
+                }
+                found_child = true;
+#ifdef ENSURE_WAITID_ONCE
+                s_waited_for_pids.set(child_pid);
+#endif
+            }
+            if (job.should_be_disowned())
+                disowned_jobs.append(job_id);
+        }
+
+        for (auto job_id : disowned_jobs) {
+            jobs.remove(job_id);
+        }
+    } while (!found_child);
+}
+
 Shell::Shell()
+    : m_default_constructed(true)
+{
+    push_frame().leak_frame();
+
+    int rc = gethostname(hostname, Shell::HostNameSize);
+    if (rc < 0)
+        perror("gethostname");
+
+    {
+        auto* pw = getpwuid(getuid());
+        if (pw) {
+            username = pw->pw_name;
+            home = pw->pw_dir;
+            setenv("HOME", pw->pw_dir, 1);
+        }
+        endpwent();
+    }
+
+    // For simplicity, start at the user's home directory.
+    this->cwd = home;
+    setenv("PWD", home.characters(), 1);
+
+    // Add the default PATH vars.
+    {
+        StringBuilder path;
+        path.append(getenv("PATH"));
+        if (path.length())
+            path.append(":");
+        path.append("/bin:/usr/bin:/usr/local/bin");
+        setenv("PATH", path.to_string().characters(), true);
+    }
+
+    cache_path();
+}
+
+Shell::Shell(Line::Editor& editor)
+    : m_editor(editor)
 {
     uid = getuid();
     tcsetpgrp(0, getpgrp());
@@ -1281,6 +1565,9 @@ Shell::Shell()
 
 Shell::~Shell()
 {
+    if (m_default_constructed)
+        return;
+
     stop_all_jobs();
     save_history();
 }
@@ -1365,4 +1652,55 @@ void Shell::save_to(JsonObject& object)
         job_objects.append(move(job_object));
     }
     object.set("jobs", move(job_objects));
+}
+
+void FileDescriptionCollector::collect()
+{
+    for (auto fd : m_fds)
+        close(fd);
+    m_fds.clear();
+}
+
+FileDescriptionCollector::~FileDescriptionCollector()
+{
+    collect();
+}
+
+void FileDescriptionCollector::add(int fd)
+{
+    m_fds.append(fd);
+}
+
+SavedFileDescriptors::SavedFileDescriptors(const NonnullRefPtrVector<AST::Rewiring>& intended_rewirings)
+{
+    for (auto& rewiring : intended_rewirings) {
+        int new_fd = dup(rewiring.source_fd);
+        if (new_fd < 0) {
+            if (errno != EBADF)
+                perror("dup");
+            // The fd that will be overwritten isn't open right now,
+            // it will be cleaned up by the exec()-side collector
+            // and we have nothing to do here, so just ignore this error.
+            continue;
+        }
+
+        auto flags = fcntl(new_fd, F_GETFL);
+        auto rc = fcntl(new_fd, F_SETFL, flags | FD_CLOEXEC);
+        ASSERT(rc == 0);
+
+        m_saves.append({ rewiring.source_fd, new_fd });
+        m_collector.add(new_fd);
+    }
+}
+
+SavedFileDescriptors::~SavedFileDescriptors()
+{
+    for (auto& save : m_saves) {
+        if (dup2(save.saved, save.original) < 0) {
+            perror("dup2(~SavedFileDescriptors)");
+            continue;
+        }
+    }
+}
+
 }

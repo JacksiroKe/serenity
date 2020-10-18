@@ -24,6 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <AK/Format.h>
 #include <AK/Platform.h>
 
 #pragma once
@@ -111,6 +112,8 @@ private:
 template<typename T>
 ALWAYS_INLINE ValueWithShadow<T> shadow_wrap_as_initialized(T value)
 {
+    if constexpr (sizeof(T) == 8)
+        return { value, 0x01010101'01010101LLU };
     if constexpr (sizeof(T) == 4)
         return { value, 0x01010101 };
     if constexpr (sizeof(T) == 2)
@@ -158,3 +161,11 @@ inline void ValueAndShadowReference<T>::operator=(const ValueWithShadow<T>& othe
 }
 
 }
+
+template<typename T>
+struct AK::Formatter<UserspaceEmulator::ValueWithShadow<T>> : AK::Formatter<T> {
+    void format(TypeErasedFormatParams& params, FormatBuilder& builder, UserspaceEmulator::ValueWithShadow<T> value)
+    {
+        return Formatter<T>::format(params, builder, value.value());
+    }
+};

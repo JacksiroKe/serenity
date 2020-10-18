@@ -25,8 +25,8 @@
  */
 
 #include "Client.h"
-#include <AK/BufferStream.h>
 #include <AK/ByteBuffer.h>
+#include <AK/MemoryStream.h>
 #include <AK/String.h>
 #include <AK/StringBuilder.h>
 #include <AK/StringView.h>
@@ -99,7 +99,7 @@ void Client::handle_command(const Command& command)
         // them can be disabled (or re-enabled) after connecting.
         break;
     case CMD_DONT:
-        // no response - we only "support" two options (echo and suppres
+        // no response - we only "support" two options (echo and suppress
         // go-ahead), and both of them are always enabled.
         break;
     case CMD_WILL:
@@ -171,10 +171,12 @@ void Client::send_command(Command command)
 void Client::send_commands(Vector<Command> commands)
 {
     auto buffer = ByteBuffer::create_uninitialized(commands.size() * 3);
-    BufferStream stream(buffer);
+    OutputMemoryStream stream { buffer };
+
     for (auto& command : commands)
         stream << (u8)IAC << command.command << command.subcommand;
-    stream.snip();
+
+    ASSERT(stream.is_end());
     m_socket->write(buffer.data(), buffer.size());
 }
 

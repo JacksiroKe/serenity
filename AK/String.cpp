@@ -25,6 +25,7 @@
  */
 
 #include <AK/FlyString.h>
+#include <AK/Format.h>
 #include <AK/Memory.h>
 #include <AK/StdLibExtras.h>
 #include <AK/String.h>
@@ -59,10 +60,7 @@ bool String::operator==(const String& other) const
     if (!other.m_impl)
         return false;
 
-    if (length() != other.length())
-        return false;
-
-    return !memcmp(characters(), other.characters(), length());
+    return *m_impl == *other.m_impl;
 }
 
 bool String::operator==(const StringView& other) const
@@ -214,49 +212,20 @@ Optional<unsigned> String::to_uint() const
     return StringUtils::convert_to_uint(view());
 }
 
-String String::number(unsigned long long value)
-{
-    int size;
-    char buffer[32];
-    size = snprintf(buffer, sizeof(buffer), "%llu", value);
-    return String(buffer, size);
-}
+template<typename T>
+String String::number(T value) { return formatted("{}", value); }
 
-String String::number(unsigned long value)
-{
-    int size;
-    char buffer[32];
-    size = snprintf(buffer, sizeof(buffer), "%lu", value);
-    return String(buffer, size);
-}
-
-String String::number(unsigned value)
-{
-    char buffer[32];
-    int size = snprintf(buffer, sizeof(buffer), "%u", value);
-    return String(buffer, size);
-}
-
-String String::number(long long value)
-{
-    char buffer[32];
-    int size = snprintf(buffer, sizeof(buffer), "%lld", value);
-    return String(buffer, size);
-}
-
-String String::number(long value)
-{
-    char buffer[32];
-    int size = snprintf(buffer, sizeof(buffer), "%ld", value);
-    return String(buffer, size);
-}
-
-String String::number(int value)
-{
-    char buffer[32];
-    int size = snprintf(buffer, sizeof(buffer), "%d", value);
-    return String(buffer, size);
-}
+template String String::number(unsigned char);
+template String String::number(unsigned short);
+template String String::number(unsigned int);
+template String String::number(unsigned long);
+template String String::number(unsigned long long);
+template String String::number(char);
+template String String::number(short);
+template String String::number(int);
+template String String::number(long);
+template String String::number(long long);
+template String String::number(signed char);
 
 String String::format(const char* fmt, ...)
 {
@@ -330,7 +299,7 @@ bool String::equals_ignoring_case(const StringView& other) const
     return StringUtils::equals_ignoring_case(view(), other);
 }
 
-int String::replace(const String& needle, const String& replacement, bool all_occurences)
+int String::replace(const String& needle, const String& replacement, bool all_occurrences)
 {
     if (is_empty())
         return 0;
@@ -344,7 +313,7 @@ int String::replace(const String& needle, const String& replacement, bool all_oc
 
         pos = ptr - characters();
         positions.append(pos);
-        if (!all_occurences)
+        if (!all_occurrences)
             break;
 
         start = pos + 1;
@@ -363,44 +332,6 @@ int String::replace(const String& needle, const String& replacement, bool all_oc
     b.append(substring_view(lastpos, length() - lastpos));
     m_impl = StringImpl::create(b.build().characters());
     return positions.size();
-}
-
-String String::trim_whitespace(TrimMode mode) const
-{
-    auto is_whitespace_character = [](char ch) -> bool {
-        return ch == '\t'
-            || ch == '\n'
-            || ch == '\v'
-            || ch == '\f'
-            || ch == '\r'
-            || ch == ' ';
-    };
-
-    size_t substring_start = 0;
-    size_t substring_length = length();
-
-    if (mode == TrimMode::Left || mode == TrimMode::Both) {
-        for (size_t i = 0; i < length(); ++i) {
-            if (substring_length == 0)
-                return "";
-            if (!is_whitespace_character(characters()[i]))
-                break;
-            ++substring_start;
-            --substring_length;
-        }
-    }
-
-    if (mode == TrimMode::Right || mode == TrimMode::Both) {
-        for (size_t i = length() - 1; i > 0; --i) {
-            if (substring_length == 0)
-                return "";
-            if (!is_whitespace_character(characters()[i]))
-                break;
-            --substring_length;
-        }
-    }
-
-    return substring(substring_start, substring_length);
 }
 
 String escape_html_entities(const StringView& html)
@@ -482,6 +413,36 @@ bool String::operator==(const char* cstring) const
 StringView String::view() const
 {
     return { characters(), length() };
+}
+
+InputStream& operator>>(InputStream& stream, String& string)
+{
+    StringBuilder builder;
+
+    for (;;) {
+        char next_char;
+        stream >> next_char;
+
+        if (stream.has_any_error()) {
+            stream.set_fatal_error();
+            string = nullptr;
+            return stream;
+        }
+
+        if (next_char) {
+            builder.append(next_char);
+        } else {
+            string = builder.to_string();
+            return stream;
+        }
+    }
+}
+
+String String::vformatted(StringView fmtstr, TypeErasedFormatParams params)
+{
+    StringBuilder builder;
+    vformat(builder, fmtstr, params);
+    return builder.to_string();
 }
 
 }

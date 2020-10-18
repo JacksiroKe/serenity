@@ -24,17 +24,18 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
+#include <AK/String.h>
 #include <LibJS/Runtime/Exception.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
 Exception::Exception(Value value)
     : m_value(value)
 {
-    auto& call_stack = interpreter().call_stack();
+    auto& call_stack = vm().call_stack();
     for (ssize_t i = call_stack.size() - 1; i >= 0; --i) {
-        auto function_name = call_stack[i].function_name;
+        String function_name = call_stack[i].function_name;
         if (function_name.is_empty())
             function_name = "<anonymous>";
         m_trace.append(function_name);

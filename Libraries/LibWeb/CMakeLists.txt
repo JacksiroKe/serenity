@@ -5,6 +5,7 @@ set(SOURCES
     Bindings/LocationObject.cpp
     Bindings/NavigatorObject.cpp
     Bindings/NodeWrapperFactory.cpp
+    Bindings/ScriptExecutionContext.cpp
     Bindings/WindowObject.cpp
     Bindings/Wrappable.cpp
     Bindings/XMLHttpRequestConstructor.cpp
@@ -15,6 +16,7 @@ set(SOURCES
     CSS/Parser/CSSParser.cpp
     CSS/PropertyID.cpp
     CSS/PropertyID.h
+    CSS/QuirksModeStyleSheetSource.cpp
     CSS/Selector.cpp
     CSS/SelectorEngine.cpp
     CSS/StyleDeclaration.cpp
@@ -127,11 +129,13 @@ set(SOURCES
     HTML/Parser/HTMLTokenizer.cpp
     HTML/Parser/ListOfActiveFormattingElements.cpp
     HTML/Parser/StackOfOpenElements.cpp
+    HighResolutionTime/Performance.cpp
     InProcessWebView.cpp
     Layout/BoxModelMetrics.cpp
     Layout/LayoutBlock.cpp
     Layout/LayoutBox.cpp
     Layout/LayoutBreak.cpp
+    Layout/LayoutButton.cpp
     Layout/LayoutCanvas.cpp
     Layout/LayoutCheckBox.cpp
     Layout/LayoutDocument.cpp
@@ -144,6 +148,9 @@ set(SOURCES
     Layout/LayoutPosition.cpp
     Layout/LayoutReplaced.cpp
     Layout/LayoutSVG.cpp
+    Layout/LayoutSVGGraphics.cpp
+    Layout/LayoutSVGPath.cpp
+    Layout/LayoutSVGSVG.cpp
     Layout/LayoutTable.cpp
     Layout/LayoutTableCell.cpp
     Layout/LayoutTableRow.cpp
@@ -295,6 +302,12 @@ libweb_js_wrapper(HTML/HTMLUListElement)
 libweb_js_wrapper(HTML/HTMLUnknownElement)
 libweb_js_wrapper(HTML/HTMLVideoElement)
 libweb_js_wrapper(HTML/ImageData)
+libweb_js_wrapper(HighResolutionTime/Performance)
+libweb_js_wrapper(SVG/SVGElement)
+libweb_js_wrapper(SVG/SVGGeometryElement)
+libweb_js_wrapper(SVG/SVGGraphicsElement)
+libweb_js_wrapper(SVG/SVGPathElement)
+libweb_js_wrapper(SVG/SVGSVGElement)
 libweb_js_wrapper(UIEvents/MouseEvent)
 libweb_js_wrapper(UIEvents/UIEvent)
 
@@ -322,6 +335,14 @@ add_custom_command(
 add_custom_command(
     OUTPUT CSS/DefaultStyleSheetSource.cpp
     COMMAND ${write_if_different} CSS/DefaultStyleSheetSource.cpp ${CMAKE_CURRENT_SOURCE_DIR}/Scripts/GenerateStyleSheetSource.sh default_stylesheet_source ${CMAKE_CURRENT_SOURCE_DIR}/CSS/Default.css
+    VERBATIM
+    DEPENDS Scripts/GenerateStyleSheetSource.sh
+    MAIN_DEPENDENCY CSS/Default.css
+)
+
+add_custom_command(
+    OUTPUT CSS/QuirksModeStyleSheetSource.cpp
+    COMMAND ${write_if_different} CSS/QuirksModeStyleSheetSource.cpp ${CMAKE_CURRENT_SOURCE_DIR}/Scripts/GenerateStyleSheetSource.sh quirks_mode_stylesheet_source ${CMAKE_CURRENT_SOURCE_DIR}/CSS/QuirksMode.css
     VERBATIM
     DEPENDS Scripts/GenerateStyleSheetSource.sh
     MAIN_DEPENDENCY CSS/Default.css

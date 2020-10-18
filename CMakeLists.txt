@@ -52,7 +52,7 @@ if (ALL_THE_DEBUG_MACROS)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DAPIC_DEBUG -DAPIC_SMP_DEBUG -DARP_DEBUG -DAWAVLOADER_DEBUG")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DBBFS_DEBUG -DBXVGA_DEBUG")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DCACHE_DEBUG -DCHTTPJOB_DEBUG -DCNETWORKJOB_DEBUG -DCOMPOSE_DEBUG -DCONTEXT_SWITCH_DEBUG -DCONTIGUOUS_VMOBJECT_DEBUG -DCRYPTO_DEBUG -DCSOCKET_DEBUG")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDEBUG_GZIP -DDEBUG_HIGHLIGHT_FOCUSED_FRAME -DDEBUG_IO -DDEBUG_ITEM_RECTS -DDEBUG_LOCAL_SOCKET -DDEBUG_MAPPED_FILE -DDEBUG_MENUS -DDEBUG_POLL_SELECT -DDEBUG_SPAM -DDEBUG_STRINGIMPL -DDEBUG_SYNTAX_HIGHLIGHTING -DDEBUG_TEXTEDITOR -DDEFERRED_INVOKE_DEBUG -DDHCPV4CLIENT_DEBUG -DDHCPV4_DEBUG -DDOUBLECLICK_DEBUG -DDRAGDROP_DEBUG -DDWARF_DEBUG -DDYNAMIC_LOAD_DEBUG")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDEBUG_CURSOR_TOOL -DDEBUG_GZIP -DDEBUG_HIGHLIGHT_FOCUSED_FRAME -DDEBUG_IO -DDEBUG_ITEM_RECTS -DDEBUG_LOCAL_SOCKET -DDEBUG_MAPPED_FILE -DDEBUG_MARKDOWN -DDEBUG_MENUS -DDEBUG_POLL_SELECT -DDEBUG_SPAM -DDEBUG_STRINGIMPL -DDEBUG_SYNTAX_HIGHLIGHTING -DDEBUG_TEXTEDITOR -DDEFERRED_INVOKE_DEBUG -DDHCPV4CLIENT_DEBUG -DDHCPV4_DEBUG -DDOUBLECLICK_DEBUG -DDRAGDROP_DEBUG -DDWARF_DEBUG -DDYNAMIC_LOAD_DEBUG")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DE1000_DEBUG -DEBR_DEBUG -DEDITOR_DEBUG -DEMOJI_DEBUG -DETHERNET_DEBUG -DETHERNET_VERY_DEBUG -DEVENT_DEBUG -DEVENTLOOP_DEBUG -DEXEC_DEBUG -DEXT2_DEBUG")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFIFO_DEBUG -DFILL_PATH_DEBUG -DFORK_DEBUG")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DGBOXLAYOUT_DEBUG -DGEMINIJOB_DEBUG -DGENERATE_DEBUG_CODE -DGLOBAL_DTORS_DEBUG -DGMENU_DEBUG -DGPT_DEBUG")
@@ -80,7 +80,6 @@ include_directories(.)
 
 add_subdirectory(Meta/Lagom)
 add_subdirectory(DevTools/IPCCompiler)
-add_subdirectory(DevTools/FormCompiler)
 add_subdirectory(Libraries/LibWeb/CodeGenerators)
 add_subdirectory(AK/Tests)
 
@@ -137,6 +136,19 @@ function(serenity_bin target_name)
     serenity_generated_sources(${target_name})
 endfunction()
 
+function(compile_json_gui source output string_name)
+    set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
+    add_custom_command(
+        OUTPUT ${output}
+        COMMAND ${write_if_different} ${output} ${CMAKE_SOURCE_DIR}/Meta/text-to-cpp-string.sh ${string_name} ${source}
+        VERBATIM
+        DEPENDS ${CMAKE_SOURCE_DIR}/Meta/text-to-cpp-string.sh
+        MAIN_DEPENDENCY ${source}
+    )
+    get_filename_component(output_name ${output} NAME)
+    add_custom_target(generate_${output_name} DEPENDS ${output})
+endfunction()
+
 function(compile_ipc source output)
     set(source ${CMAKE_CURRENT_SOURCE_DIR}/${source})
     add_custom_command(
@@ -190,6 +202,7 @@ set(CMAKE_SHARED_LIBRARY_CREATE_CXX_FLAGS "-shared")
 #FIXME: -fstack-protector
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Os -g1 -fno-exceptions -fno-rtti -Wno-address-of-packed-member -Wundef -Wcast-qual -Wwrite-strings -Wimplicit-fallthrough -Wno-nonnull-compare -Wno-deprecated-copy -Wno-expansion-to-defined")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffile-prefix-map=${CMAKE_SOURCE_DIR}=.")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDEBUG -DSANITIZE_PTRS")
 add_link_options(--sysroot ${CMAKE_BINARY_DIR}/Root)
@@ -197,6 +210,7 @@ add_link_options(--sysroot ${CMAKE_BINARY_DIR}/Root)
 include_directories(Libraries/LibC)
 include_directories(Libraries/LibM)
 include_directories(Services)
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/Services)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/Libraries)
 

@@ -37,11 +37,20 @@ class Buffered;
 
 template<typename StreamType, size_t Size>
 class Buffered<StreamType, Size, typename EnableIf<IsBaseOf<InputStream, StreamType>::value>::Type> final : public InputStream {
+    AK_MAKE_NONCOPYABLE(Buffered);
+
 public:
     template<typename... Parameters>
     explicit Buffered(Parameters&&... parameters)
         : m_stream(forward<Parameters>(parameters)...)
     {
+    }
+
+    Buffered(Buffered&& other)
+        : m_stream(move(other.m_stream))
+    {
+        other.buffer().copy_to(buffer());
+        m_buffered = exchange(other.m_buffered, 0);
     }
 
     bool has_recoverable_error() const override { return m_stream.has_recoverable_error(); }
@@ -60,15 +69,15 @@ public:
         if (has_any_error())
             return 0;
 
-        auto nread = buffer().trim(m_buffer_remaining).copy_trimmed_to(bytes);
+        auto nread = buffer().trim(m_buffered).copy_trimmed_to(bytes);
 
-        m_buffer_remaining -= nread;
-        buffer().slice(nread, m_buffer_remaining).copy_to(buffer());
+        m_buffered -= nread;
+        buffer().slice(nread, m_buffered).copy_to(buffer());
 
         if (nread < bytes.size()) {
-            m_buffer_remaining = m_stream.read(buffer());
+            m_buffered = m_stream.read(buffer());
 
-            if (m_buffer_remaining == 0)
+            if (m_buffered == 0)
                 return nread;
 
             nread += read(bytes.slice(nread));
@@ -77,7 +86,7 @@ public:
         return nread;
     }
 
-    virtual bool read_or_error(Bytes bytes) override
+    bool read_or_error(Bytes bytes) override
     {
         if (read(bytes) < bytes.size()) {
             set_fatal_error();
@@ -87,17 +96,19 @@ public:
         return true;
     }
 
-    virtual bool eof() const
+    bool unreliable_eof() const override { return m_buffered == 0 && m_stream.unreliable_eof(); }
+
+    bool eof() const
     {
-        if (m_buffer_remaining > 0)
+        if (m_buffered > 0)
             return false;
 
-        m_buffer_remaining = m_stream.read(buffer());
+        m_buffered = m_stream.read(buffer());
 
-        return m_buffer_remaining == 0;
+        return m_buffered == 0;
     }
 
-    virtual bool discard_or_error(size_t count) override
+    bool discard_or_error(size_t count) override
     {
         size_t ndiscarded = 0;
         while (ndiscarded < count) {
@@ -117,11 +128,13 @@ private:
 
     mutable StreamType m_stream;
     mutable u8 m_buffer[Size];
-    mutable size_t m_buffer_remaining { 0 };
+    mutable size_t m_buffered { 0 };
 };
 
 template<typename StreamType, size_t Size>
 class Buffered<StreamType, Size, typename EnableIf<IsBaseOf<OutputStream, StreamType>::value>::Type> final : public OutputStream {
+    AK_MAKE_NONCOPYABLE(Buffered);
+
 public:
     template<typename... Parameters>
     explicit Buffered(Parameters&&... parameters)
@@ -129,9 +142,17 @@ public:
     {
     }
 
+    Buffered(Buffered&& other)
+        : m_stream(move(other.m_stream))
+    {
+        other.buffer().copy_to(buffer());
+        m_buffered = exchange(other.m_buffered, 0);
+    }
+
     ~Buffered()
     {
-        flush();
+        if (m_buffered > 0)
+            flush();
     }
 
     bool has_recoverable_error() const override { return m_stream.has_recoverable_error(); }
@@ -157,7 +178,7 @@ public:
             flush();
 
             if (bytes.size() - nwritten >= Size)
-                nwritten += m_stream.write_or_error(bytes);
+                nwritten += m_stream.write(bytes.slice(nwritten));
 
             nwritten += write(bytes.slice(nwritten));
         }

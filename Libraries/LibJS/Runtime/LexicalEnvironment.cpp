@@ -27,6 +27,7 @@
 #include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/Function.h>
+#include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/LexicalEnvironment.h>
 #include <LibJS/Runtime/Value.h>
 
@@ -72,12 +73,16 @@ void LexicalEnvironment::visit_children(Visitor& visitor)
 
 Optional<Variable> LexicalEnvironment::get(const FlyString& name) const
 {
+    ASSERT(type() != EnvironmentRecordType::Global);
     return m_variables.get(name);
 }
 
-void LexicalEnvironment::set(const FlyString& name, Variable variable)
+void LexicalEnvironment::set(GlobalObject& global_object, const FlyString& name, Variable variable)
 {
-    m_variables.set(name, variable);
+    if (type() == EnvironmentRecordType::Global)
+        global_object.put(name, variable.value);
+    else
+        m_variables.set(name, variable);
 }
 
 bool LexicalEnvironment::has_super_binding() const
@@ -109,21 +114,21 @@ bool LexicalEnvironment::has_this_binding() const
     ASSERT_NOT_REACHED();
 }
 
-Value LexicalEnvironment::get_this_binding() const
+Value LexicalEnvironment::get_this_binding(GlobalObject& global_object) const
 {
     ASSERT(has_this_binding());
     if (this_binding_status() == ThisBindingStatus::Uninitialized) {
-        interpreter().throw_exception<ReferenceError>(ErrorType::ThisHasNotBeenInitialized);
+        vm().throw_exception<ReferenceError>(global_object, ErrorType::ThisHasNotBeenInitialized);
         return {};
     }
     return m_this_value;
 }
 
-void LexicalEnvironment::bind_this_value(Value this_value)
+void LexicalEnvironment::bind_this_value(GlobalObject& global_object, Value this_value)
 {
     ASSERT(has_this_binding());
     if (m_this_binding_status == ThisBindingStatus::Initialized) {
-        interpreter().throw_exception<ReferenceError>(ErrorType::ThisIsAlreadyInitialized);
+        vm().throw_exception<ReferenceError>(global_object, ErrorType::ThisIsAlreadyInitialized);
         return;
     }
     m_this_value = this_value;

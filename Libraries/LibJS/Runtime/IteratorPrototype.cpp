@@ -24,6 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <AK/Function.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/IteratorPrototype.h>
 
@@ -37,7 +38,7 @@ IteratorPrototype::IteratorPrototype(GlobalObject& global_object)
 void IteratorPrototype::initialize(GlobalObject& global_object)
 {
     Object::initialize(global_object);
-    define_native_function(global_object.interpreter().well_known_symbol_iterator(), symbol_iterator, 0, Attribute::Writable | Attribute::Enumerable);
+    define_native_function(global_object.vm().well_known_symbol_iterator(), symbol_iterator, 0, Attribute::Writable | Attribute::Enumerable);
 }
 
 IteratorPrototype::~IteratorPrototype()
@@ -46,7 +47,7 @@ IteratorPrototype::~IteratorPrototype()
 
 JS_DEFINE_NATIVE_FUNCTION(IteratorPrototype::symbol_iterator)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     return this_object;

@@ -36,7 +36,7 @@ namespace ProtocolServer {
 static HashMap<int, RefPtr<ClientConnection>> s_connections;
 
 ClientConnection::ClientConnection(NonnullRefPtr<Core::LocalSocket> socket, int client_id)
-    : IPC::ClientConnection<ProtocolServerEndpoint>(*this, move(socket), client_id)
+    : IPC::ClientConnection<ProtocolClientEndpoint, ProtocolServerEndpoint>(*this, move(socket), client_id)
 {
     s_connections.set(client_id, *this);
 }
@@ -66,7 +66,7 @@ OwnPtr<Messages::ProtocolServer::StartDownloadResponse> ClientConnection::handle
     auto* protocol = Protocol::find_by_name(url.protocol());
     if (!protocol)
         return make<Messages::ProtocolServer::StartDownloadResponse>(-1);
-    auto download = protocol->start_download(*this, url, message.request_headers().entries());
+    auto download = protocol->start_download(*this, message.method(), url, message.request_headers().entries(), message.request_body().to_byte_buffer());
     if (!download)
         return make<Messages::ProtocolServer::StartDownloadResponse>(-1);
     auto id = download->id();
@@ -91,7 +91,7 @@ void ClientConnection::did_finish_download(Badge<Download>, Download& download, 
     RefPtr<SharedBuffer> buffer;
     if (success && download.payload().size() > 0 && !download.payload().is_null()) {
         buffer = SharedBuffer::create_with_size(download.payload().size());
-        memcpy(buffer->data(), download.payload().data(), download.payload().size());
+        memcpy(buffer->data<void>(), download.payload().data(), download.payload().size());
         buffer->seal();
         buffer->share_with(client_pid());
         m_shared_buffers.set(buffer->shbuf_id(), buffer);

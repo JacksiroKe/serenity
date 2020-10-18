@@ -27,7 +27,6 @@
 #pragma once
 
 #include <LibCrypto/BigInt/SignedBigInteger.h>
-#include <LibJS/Runtime/BigInt.h>
 #include <LibJS/Runtime/Cell.h>
 
 namespace JS {
@@ -38,7 +37,7 @@ public:
     virtual ~BigInt();
 
     const Crypto::SignedBigInteger& big_integer() const { return m_big_integer; }
-    const String to_string() const { return String::format("%sn", m_big_integer.to_base10().characters()); }
+    const String to_string() const { return String::formatted("{}n", m_big_integer.to_base10()); }
 
 private:
     virtual const char* class_name() const override { return "BigInt"; }
@@ -47,6 +46,5 @@ private:
 };
 
 BigInt* js_bigint(Heap&, Crypto::SignedBigInteger);
-BigInt* js_bigint(Interpreter&, Crypto::SignedBigInteger);
 
 }

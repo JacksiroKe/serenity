@@ -35,44 +35,46 @@
 
 namespace JS {
 
-static ScriptFunction* typed_this(Interpreter& interpreter, GlobalObject& global_object)
+static ScriptFunction* typed_this(VM& vm, GlobalObject& global_object)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return nullptr;
     if (!this_object->is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotAFunctionNoParam);
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotAFunctionNoParam);
         return nullptr;
     }
     return static_cast<ScriptFunction*>(this_object);
 }
 
-ScriptFunction* ScriptFunction::create(GlobalObject& global_object, const FlyString& name, const Statement& body, Vector<FunctionNode::Parameter> parameters, i32 m_function_length, LexicalEnvironment* parent_environment, bool is_arrow_function)
+ScriptFunction* ScriptFunction::create(GlobalObject& global_object, const FlyString& name, const Statement& body, Vector<FunctionNode::Parameter> parameters, i32 m_function_length, LexicalEnvironment* parent_environment, bool is_strict, bool is_arrow_function)
 {
-    return global_object.heap().allocate<ScriptFunction>(global_object, global_object, name, body, move(parameters), m_function_length, parent_environment, *global_object.function_prototype(), is_arrow_function);
+    return global_object.heap().allocate<ScriptFunction>(global_object, global_object, name, body, move(parameters), m_function_length, parent_environment, *global_object.function_prototype(), is_strict, is_arrow_function);
 }
 
-ScriptFunction::ScriptFunction(GlobalObject& global_object, const FlyString& name, const Statement& body, Vector<FunctionNode::Parameter> parameters, i32 m_function_length, LexicalEnvironment* parent_environment, Object& prototype, bool is_arrow_function)
-    : Function(prototype, is_arrow_function ? interpreter().this_value(global_object) : Value(), {})
+ScriptFunction::ScriptFunction(GlobalObject& global_object, const FlyString& name, const Statement& body, Vector<FunctionNode::Parameter> parameters, i32 m_function_length, LexicalEnvironment* parent_environment, Object& prototype, bool is_strict, bool is_arrow_function)
+    : Function(prototype, is_arrow_function ? vm().this_value(global_object) : Value(), {})
     , m_name(name)
     , m_body(body)
     , m_parameters(move(parameters))
     , m_parent_environment(parent_environment)
     , m_function_length(m_function_length)
+    , m_is_strict(is_strict)
     , m_is_arrow_function(is_arrow_function)
 {
 }
 
 void ScriptFunction::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     Function::initialize(global_object);
     if (!m_is_arrow_function) {
-        Object* prototype = Object::create_empty(global_object);
-        prototype->define_property("constructor", this, Attribute::Writable | Attribute::Configurable);
-        define_property("prototype", prototype, 0);
+        Object* prototype = vm.heap().allocate<Object>(global_object, *global_object.new_script_function_prototype_object_shape());
+        prototype->define_property(vm.names.constructor, this, Attribute::Writable | Attribute::Configurable);
+        define_property(vm.names.prototype, prototype, 0);
     }
-    define_native_property("length", length_getter, nullptr, Attribute::Configurable);
-    define_native_property("name", name_getter, nullptr, Attribute::Configurable);
+    define_native_property(vm.names.length, length_getter, nullptr, Attribute::Configurable);
+    define_native_property(vm.names.name, name_getter, nullptr, Attribute::Configurable);
 }
 
 ScriptFunction::~ScriptFunction()
@@ -106,9 +108,19 @@ LexicalEnvironment* ScriptFunction::create_environment()
     return environment;
 }
 
-Value ScriptFunction::call(Interpreter& interpreter)
+Value ScriptFunction::call()
 {
-    auto& argument_values = interpreter.call_frame().arguments;
+    OwnPtr<Interpreter> local_interpreter;
+    Interpreter* interpreter = vm().interpreter_if_exists();
+
+    if (!interpreter) {
+        local_interpreter = Interpreter::create_with_existing_global_object(global_object());
+        interpreter = local_interpreter.ptr();
+    }
+
+    VM::InterpreterExecutionScope scope(*interpreter);
+
+    auto& argument_values = vm().call_frame().arguments;
     ArgumentVector arguments;
     for (size_t i = 0; i < m_parameters.size(); ++i) {
         auto parameter = parameters()[i];
@@ -122,29 +134,30 @@ Value ScriptFunction::call(Interpreter& interpreter)
             if (i < argument_values.size() && !argument_values[i].is_undefined()) {
                 value = argument_values[i];
             } else if (parameter.default_value) {
-                value = parameter.default_value->execute(interpreter, global_object());
-                if (interpreter.exception())
+                value = parameter.default_value->execute(*interpreter, global_object());
+                if (vm().exception())
                     return {};
             }
         }
         arguments.append({ parameter.name, value });
-        interpreter.current_environment()->set(parameter.name, { value, DeclarationKind::Var });
+        vm().current_environment()->set(global_object(), parameter.name, { value, DeclarationKind::Var });
     }
-    return interpreter.execute_statement(global_object(), m_body, arguments, ScopeType::Function);
+
+    return interpreter->execute_statement(global_object(), m_body, arguments, ScopeType::Function);
 }
 
-Value ScriptFunction::construct(Interpreter& interpreter, Function&)
+Value ScriptFunction::construct(Function&)
 {
     if (m_is_arrow_function) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotAConstructor, m_name.characters());
+        vm().throw_exception<TypeError>(global_object(), ErrorType::NotAConstructor, m_name);
         return {};
     }
-    return call(interpreter);
+    return call();
 }
 
 JS_DEFINE_NATIVE_GETTER(ScriptFunction::length_getter)
 {
-    auto* function = typed_this(interpreter, global_object);
+    auto* function = typed_this(vm, global_object);
     if (!function)
         return {};
     return Value(static_cast<i32>(function->m_function_length));
@@ -152,10 +165,10 @@ JS_DEFINE_NATIVE_GETTER(ScriptFunction::length_getter)
 
 JS_DEFINE_NATIVE_GETTER(ScriptFunction::name_getter)
 {
-    auto* function = typed_this(interpreter, global_object);
+    auto* function = typed_this(vm, global_object);
     if (!function)
         return {};
-    return js_string(interpreter, function->name().is_null() ? "" : function->name());
+    return js_string(vm, function->name().is_null() ? "" : function->name());
 }
 
 }

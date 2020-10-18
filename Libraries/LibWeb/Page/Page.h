@@ -29,6 +29,7 @@
 #include <AK/Noncopyable.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
+#include <AK/URL.h>
 #include <Kernel/API/KeyCode.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/Forward.h>
@@ -59,6 +60,9 @@ public:
     void set_focused_frame(Badge<EventHandler>, Frame&);
 
     void load(const URL&);
+    void load(const LoadRequest&);
+
+    void load_html(const StringView&, const URL&);
 
     bool handle_mouseup(const Gfx::IntPoint&, unsigned button, unsigned modifiers);
     bool handle_mousedown(const Gfx::IntPoint&, unsigned button, unsigned modifiers);
@@ -85,6 +89,7 @@ public:
     virtual void page_did_request_cursor_change(Gfx::StandardCursor) { }
     virtual void page_did_request_context_menu(const Gfx::IntPoint&) { }
     virtual void page_did_request_link_context_menu(const Gfx::IntPoint&, const URL&, [[maybe_unused]] const String& target, [[maybe_unused]] unsigned modifiers) { }
+    virtual void page_did_request_image_context_menu(const Gfx::IntPoint&, const URL&, [[maybe_unused]] const String& target, [[maybe_unused]] unsigned modifiers, const Gfx::Bitmap*) { }
     virtual void page_did_click_link(const URL&, [[maybe_unused]] const String& target, [[maybe_unused]] unsigned modifiers) { }
     virtual void page_did_middle_click_link(const URL&, [[maybe_unused]] const String& target, [[maybe_unused]] unsigned modifiers) { }
     virtual void page_did_enter_tooltip_area(const Gfx::IntPoint&, const String&) { }
@@ -95,6 +100,7 @@ public:
     virtual void page_did_change_favicon(const Gfx::Bitmap&) { }
     virtual void page_did_layout() { }
     virtual void page_did_request_scroll_into_view(const Gfx::IntRect&) { }
+    virtual void page_did_request_alert(const String&) { }
 };
 
 }

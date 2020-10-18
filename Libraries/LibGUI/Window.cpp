@@ -65,6 +65,24 @@ Window::Window(Core::Object* parent)
     all_windows->set(this);
     m_rect_when_windowless = { -5000, -5000, 140, 140 };
     m_title_when_windowless = "GUI::Window";
+
+    register_property(
+        "title",
+        [this] { return title(); },
+        [this](auto& value) {
+            set_title(value.to_string());
+            return true;
+        });
+
+    register_property("visible", [this] { return is_visible(); });
+    register_property("active", [this] { return is_active(); });
+
+    REGISTER_BOOL_PROPERTY("minimizable", is_minimizable, set_minimizable);
+    REGISTER_BOOL_PROPERTY("resizable", is_resizable, set_resizable);
+    REGISTER_BOOL_PROPERTY("fullscreen", is_fullscreen, set_fullscreen);
+    REGISTER_RECT_PROPERTY("rect", rect, set_rect);
+    REGISTER_SIZE_PROPERTY("base_size", base_size, set_base_size);
+    REGISTER_SIZE_PROPERTY("size_increment", size_increment, set_size_increment);
 }
 
 Window::~Window()
@@ -635,7 +653,7 @@ RefPtr<Gfx::Bitmap> Window::create_shared_bitmap(Gfx::BitmapFormat format, const
 {
     ASSERT(WindowServerConnection::the().server_pid());
     ASSERT(!size.is_empty());
-    size_t pitch = round_up_to_power_of_two(size.width() * sizeof(Gfx::RGBA32), 16);
+    size_t pitch = Gfx::Bitmap::minimum_pitch(size.width(), format);
     size_t size_in_bytes = size.height() * pitch;
     auto shared_buffer = SharedBuffer::create_with_size(size_in_bytes);
     ASSERT(shared_buffer);
@@ -722,20 +740,6 @@ Vector<Widget*> Window::focusable_widgets() const
 
     collect_focusable_widgets(const_cast<Widget&>(*m_main_widget));
     return collected_widgets;
-}
-
-void Window::save_to(AK::JsonObject& json)
-{
-    json.set("title", title());
-    json.set("visible", is_visible());
-    json.set("active", is_active());
-    json.set("minimizable", is_minimizable());
-    json.set("resizable", is_resizable());
-    json.set("fullscreen", is_fullscreen());
-    json.set("rect", rect().to_string());
-    json.set("base_size", base_size().to_string());
-    json.set("size_increment", size_increment().to_string());
-    Core::Object::save_to(json);
 }
 
 void Window::set_fullscreen(bool fullscreen)

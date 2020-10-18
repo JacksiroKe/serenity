@@ -24,7 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <AK/BufferStream.h>
+#include <AK/MemoryStream.h>
 #include <AK/NumericLimits.h>
 #include <AK/OwnPtr.h>
 #include <LibAudio/WavLoader.h>
@@ -37,7 +37,7 @@ WavLoader::WavLoader(const StringView& path)
     : m_file(Core::File::construct(path))
 {
     if (!m_file->open(Core::IODevice::ReadOnly)) {
-        m_error_string = String::format("Can't open file: %s", m_file->error_string());
+        m_error_string = String::formatted("Can't open file: {}", m_file->error_string());
         return;
     }
 
@@ -50,7 +50,7 @@ WavLoader::WavLoader(const StringView& path)
 RefPtr<Buffer> WavLoader::get_more_samples(size_t max_bytes_to_read_from_input)
 {
 #ifdef AWAVLOADER_DEBUG
-    dbgprintf("Read WAV of format PCM with num_channels %u sample rate %u, bits per sample %u\n", m_num_channels, m_sample_rate, m_bits_per_sample);
+    dbgln("Read WAV of format PCM with num_channels {} sample rate {}, bits per sample {}", m_num_channels, m_sample_rate, m_bits_per_sample);
 #endif
 
     auto raw_samples = m_file->read(max_bytes_to_read_from_input);
@@ -58,7 +58,7 @@ RefPtr<Buffer> WavLoader::get_more_samples(size_t max_bytes_to_read_from_input)
         return nullptr;
 
     auto buffer = Buffer::from_pcm_data(raw_samples, *m_resampler, m_num_channels, m_bits_per_sample);
-    //Buffer contains normalized samples, but m_loaded_samples should containt the ammount of actually loaded samples
+    //Buffer contains normalized samples, but m_loaded_samples should contain the amount of actually loaded samples
     m_loaded_samples += static_cast<int>(max_bytes_to_read_from_input) / (m_num_channels * (m_bits_per_sample / 8));
     m_loaded_samples = min(m_total_samples, m_loaded_samples);
     return buffer;
@@ -82,18 +82,18 @@ bool WavLoader::parse_header()
 {
     Core::IODeviceStreamReader stream(*m_file);
 
-#define CHECK_OK(msg)                                                           \
-    do {                                                                        \
-        if (stream.handle_read_failure()) {                                     \
-            m_error_string = String::format("Premature stream EOF at %s", msg); \
-            return {};                                                          \
-        }                                                                       \
-        if (!ok) {                                                              \
-            m_error_string = String::format("Parsing failed: %s", msg);         \
-            return {};                                                          \
-        } else {                                                                \
-            dbgprintf("%s is OK!\n", msg);                                      \
-        }                                                                       \
+#define CHECK_OK(msg)                                                              \
+    do {                                                                           \
+        if (stream.handle_read_failure()) {                                        \
+            m_error_string = String::formatted("Premature stream EOF at {}", msg); \
+            return {};                                                             \
+        }                                                                          \
+        if (!ok) {                                                                 \
+            m_error_string = String::formatted("Parsing failed: {}", msg);         \
+            return {};                                                             \
+        } else {                                                                   \
+            dbgln("{} is OK!", msg);                                               \
+        }                                                                          \
     } while (0);
 
     bool ok = true;
@@ -219,7 +219,7 @@ bool ResampleHelper::read_sample(double& next_l, double& next_r)
 }
 
 template<typename SampleReader>
-static void read_samples_from_stream(BufferStream& stream, SampleReader read_sample, Vector<Sample>& samples, ResampleHelper& resampler, int num_channels)
+static void read_samples_from_stream(InputMemoryStream& stream, SampleReader read_sample, Vector<Sample>& samples, ResampleHelper& resampler, int num_channels)
 {
     double norm_l = 0;
     double norm_r = 0;
@@ -232,7 +232,7 @@ static void read_samples_from_stream(BufferStream& stream, SampleReader read_sam
             }
             norm_l = read_sample(stream);
 
-            if (stream.handle_read_failure()) {
+            if (stream.handle_any_error()) {
                 break;
             }
             resampler.process_sample(norm_l, norm_r);
@@ -246,7 +246,7 @@ static void read_samples_from_stream(BufferStream& stream, SampleReader read_sam
             norm_l = read_sample(stream);
             norm_r = read_sample(stream);
 
-            if (stream.handle_read_failure()) {
+            if (stream.handle_any_error()) {
                 break;
             }
             resampler.process_sample(norm_l, norm_r);
@@ -257,7 +257,7 @@ static void read_samples_from_stream(BufferStream& stream, SampleReader read_sam
     }
 }
 
-static double read_norm_sample_24(BufferStream& stream)
+static double read_norm_sample_24(InputMemoryStream& stream)
 {
     u8 byte = 0;
     stream >> byte;
@@ -274,30 +274,27 @@ static double read_norm_sample_24(BufferStream& stream)
     return double(value) / NumericLimits<i32>::max();
 }
 
-static double read_norm_sample_16(BufferStream& stream)
+static double read_norm_sample_16(InputMemoryStream& stream)
 {
-    i16 sample = 0;
+    LittleEndian<i16> sample;
     stream >> sample;
     return double(sample) / NumericLimits<i16>::max();
 }
 
-static double read_norm_sample_8(BufferStream& stream)
+static double read_norm_sample_8(InputMemoryStream& stream)
 {
     u8 sample = 0;
     stream >> sample;
     return double(sample) / NumericLimits<u8>::max();
 }
 
-// ### can't const this because BufferStream is non-const
-// perhaps we need a reading class separate from the writing one, that can be
-// entirely consted.
-RefPtr<Buffer> Buffer::from_pcm_data(ByteBuffer& data, ResampleHelper& resampler, int num_channels, int bits_per_sample)
+RefPtr<Buffer> Buffer::from_pcm_data(ReadonlyBytes data, ResampleHelper& resampler, int num_channels, int bits_per_sample)
 {
-    BufferStream stream(data);
+    InputMemoryStream stream { data };
     Vector<Sample> fdata;
     fdata.ensure_capacity(data.size() / (bits_per_sample / 8));
 #ifdef AWAVLOADER_DEBUG
-    dbg() << "Reading " << bits_per_sample << " bits and " << num_channels << " channels, total bytes: " << data.size();
+    dbgln("Reading {} bits and {} channels, total bytes: {}", bits_per_sample, num_channels, data.size());
 #endif
 
     switch (bits_per_sample) {
@@ -317,7 +314,7 @@ RefPtr<Buffer> Buffer::from_pcm_data(ByteBuffer& data, ResampleHelper& resampler
     // We should handle this in a better way above, but for now --
     // just make sure we're good. Worst case we just write some 0s where they
     // don't belong.
-    ASSERT(!stream.handle_read_failure());
+    ASSERT(!stream.handle_any_error());
 
     return Buffer::create_with_samples(move(fdata));
 }

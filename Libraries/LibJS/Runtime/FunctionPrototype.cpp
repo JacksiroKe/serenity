@@ -45,15 +45,16 @@ FunctionPrototype::FunctionPrototype(GlobalObject& global_object)
 
 void FunctionPrototype::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     Object::initialize(global_object);
     u8 attr = Attribute::Writable | Attribute::Configurable;
-    define_native_function("apply", apply, 2, attr);
-    define_native_function("bind", bind, 1, attr);
-    define_native_function("call", call, 1, attr);
-    define_native_function("toString", to_string, 0, attr);
-    define_native_function(global_object.interpreter().well_known_symbol_has_instance(), symbol_has_instance, 1, 0);
-    define_property("length", Value(0), Attribute::Configurable);
-    define_property("name", js_string(heap(), ""), Attribute::Configurable);
+    define_native_function(vm.names.apply, apply, 2, attr);
+    define_native_function(vm.names.bind, bind, 1, attr);
+    define_native_function(vm.names.call, call, 1, attr);
+    define_native_function(vm.names.toString, to_string, 0, attr);
+    define_native_function(vm.well_known_symbol_has_instance(), symbol_has_instance, 1, 0);
+    define_property(vm.names.length, Value(0), Attribute::Configurable);
+    define_property(vm.names.name, js_string(heap(), ""), Attribute::Configurable);
 }
 
 FunctionPrototype::~FunctionPrototype()
@@ -62,53 +63,53 @@ FunctionPrototype::~FunctionPrototype()
 
 JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::apply)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     if (!this_object->is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Function");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Function");
         return {};
     }
     auto& function = static_cast<Function&>(*this_object);
-    auto this_arg = interpreter.argument(0);
-    auto arg_array = interpreter.argument(1);
-    if (arg_array.is_null() || arg_array.is_undefined())
-        return interpreter.call(function, this_arg);
+    auto this_arg = vm.argument(0);
+    auto arg_array = vm.argument(1);
+    if (arg_array.is_nullish())
+        return vm.call(function, this_arg);
     if (!arg_array.is_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::FunctionArgsNotObject);
+        vm.throw_exception<TypeError>(global_object, ErrorType::FunctionArgsNotObject);
         return {};
     }
-    auto length_property = arg_array.as_object().get("length");
-    if (interpreter.exception())
+    auto length_property = arg_array.as_object().get(vm.names.length);
+    if (vm.exception())
         return {};
-    auto length = length_property.to_size_t(interpreter);
-    if (interpreter.exception())
+    auto length = length_property.to_size_t(global_object);
+    if (vm.exception())
         return {};
-    MarkedValueList arguments(interpreter.heap());
+    MarkedValueList arguments(vm.heap());
     for (size_t i = 0; i < length; ++i) {
         auto element = arg_array.as_object().get(i);
-        if (interpreter.exception())
+        if (vm.exception())
             return {};
         arguments.append(element.value_or(js_undefined()));
     }
-    return interpreter.call(function, this_arg, move(arguments));
+    return vm.call(function, this_arg, move(arguments));
 }
 
 JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::bind)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     if (!this_object->is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Function");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Function");
         return {};
     }
     auto& this_function = static_cast<Function&>(*this_object);
-    auto bound_this_arg = interpreter.argument(0);
+    auto bound_this_arg = vm.argument(0);
 
     Vector<Value> arguments;
-    if (interpreter.argument_count() > 1) {
-        arguments = interpreter.call_frame().arguments;
+    if (vm.argument_count() > 1) {
+        arguments = vm.call_frame().arguments;
         arguments.remove(0);
     }
 
@@ -117,30 +118,30 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::bind)
 
 JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::call)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     if (!this_object->is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Function");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Function");
         return {};
     }
     auto& function = static_cast<Function&>(*this_object);
-    auto this_arg = interpreter.argument(0);
-    MarkedValueList arguments(interpreter.heap());
-    if (interpreter.argument_count() > 1) {
-        for (size_t i = 1; i < interpreter.argument_count(); ++i)
-            arguments.append(interpreter.argument(i));
+    auto this_arg = vm.argument(0);
+    MarkedValueList arguments(vm.heap());
+    if (vm.argument_count() > 1) {
+        for (size_t i = 1; i < vm.argument_count(); ++i)
+            arguments.append(vm.argument(i));
     }
-    return interpreter.call(function, this_arg, move(arguments));
+    return vm.call(function, this_arg, move(arguments));
 }
 
 JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::to_string)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     if (!this_object->is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Function");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Function");
         return {};
     }
     String function_name = static_cast<Function*>(this_object)->name();
@@ -148,7 +149,7 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::to_string)
     String function_body;
 
     if (this_object->is_native_function() || this_object->is_bound_function()) {
-        function_body = String::format("  [%s]", this_object->class_name());
+        function_body = String::formatted("  [{}]", this_object->class_name());
     } else {
         StringBuilder parameters_builder;
         auto first = true;
@@ -169,23 +170,22 @@ JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::to_string)
         function_body = "  ???";
     }
 
-    auto function_source = String::format("function %s(%s) {\n%s\n}",
-        function_name.is_null() ? "" : function_name.characters(),
-        function_parameters.characters(),
-        function_body.characters());
-    return js_string(interpreter, function_source);
+    auto function_source = String::formatted(
+        "function {}({}) {{\n{}\n}}",
+        function_name.is_null() ? "" : function_name, function_parameters, function_body);
+    return js_string(vm, function_source);
 }
 
 JS_DEFINE_NATIVE_FUNCTION(FunctionPrototype::symbol_has_instance)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     if (!this_object->is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "Function");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "Function");
         return {};
     }
-    return ordinary_has_instance(interpreter, interpreter.argument(0), this_object);
+    return ordinary_has_instance(global_object, vm.argument(0), this_object);
 }
 
 }

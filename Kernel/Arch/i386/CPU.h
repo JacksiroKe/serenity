@@ -279,6 +279,10 @@ void flush_idt();
 void load_task_register(u16 selector);
 void handle_crash(RegisterState&, const char* description, int signal, bool out_of_memory = false);
 
+[[nodiscard]] bool safe_memcpy(void* dest_ptr, const void* src_ptr, size_t n, void*& fault_at);
+[[nodiscard]] ssize_t safe_strnlen(const char* str, size_t max_n, void*& fault_at);
+[[nodiscard]] bool safe_memset(void* dest_ptr, int c, size_t n, void*& fault_at);
+
 #define LSW(x) ((u32)(x)&0xFFFF)
 #define MSW(x) (((u32)(x) >> 16) & 0xFFFF)
 #define LSB(x) ((x)&0xFF)
@@ -602,15 +606,18 @@ enum class CPUFeature : u32 {
     SMEP = (1 << 6),
     SSE = (1 << 7),
     TSC = (1 << 8),
-    UMIP = (1 << 9),
-    SEP = (1 << 10),
-    SYSCALL = (1 << 11),
-    MMX = (1 << 12),
-    SSE2 = (1 << 13),
-    SSE3 = (1 << 14),
-    SSSE3 = (1 << 15),
-    SSE4_1 = (1 << 16),
-    SSE4_2 = (1 << 17)
+    RDTSCP = (1 << 9),
+    CONSTANT_TSC = (1 << 10),
+    NONSTOP_TSC = (1 << 11),
+    UMIP = (1 << 12),
+    SEP = (1 << 13),
+    SYSCALL = (1 << 14),
+    MMX = (1 << 15),
+    SSE2 = (1 << 16),
+    SSE3 = (1 << 17),
+    SSSE3 = (1 << 18),
+    SSE4_1 = (1 << 19),
+    SSE4_2 = (1 << 20),
 };
 
 class Thread;

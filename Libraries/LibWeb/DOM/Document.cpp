@@ -51,11 +51,11 @@
 #include <LibWeb/HTML/HTMLHtmlElement.h>
 #include <LibWeb/HTML/HTMLScriptElement.h>
 #include <LibWeb/HTML/HTMLTitleElement.h>
+#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Layout/LayoutDocument.h>
 #include <LibWeb/Layout/LayoutTreeBuilder.h>
 #include <LibWeb/Origin.h>
 #include <LibWeb/Page/Frame.h>
-#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/SVG/TagNames.h>
 #include <stdio.h>
 
@@ -75,6 +75,16 @@ Document::Document(const URL& url)
 
 Document::~Document()
 {
+}
+
+void Document::removed_last_ref()
+{
+    ASSERT(!ref_count());
+
+    if (m_referencing_node_count)
+        return;
+
+    delete this;
 }
 
 Origin Document::origin() const
@@ -106,21 +116,6 @@ bool Document::is_child_allowed(const Node& node) const
     default:
         return false;
     }
-}
-
-void Document::fixup()
-{
-    if (!first_child() || !is<DocumentType>(*first_child()))
-        prepend_child(adopt(*new DocumentType(*this)));
-
-    if (is<HTML::HTMLHtmlElement>(first_child()->next_sibling()))
-        return;
-
-    auto body = create_element("body");
-    auto html = create_element("html");
-    html->append_child(body);
-    this->donate_all_children_to(body);
-    this->append_child(html);
 }
 
 const Element* Document::document_element() const
@@ -359,12 +354,12 @@ void Document::set_hovered_node(Node* node)
     invalidate_style();
 }
 
-Vector<const Element*> Document::get_elements_by_name(const String& name) const
+NonnullRefPtrVector<Element> Document::get_elements_by_name(const String& name) const
 {
-    Vector<const Element*> elements;
+    NonnullRefPtrVector<Element> elements;
     for_each_in_subtree_of_type<Element>([&](auto& element) {
         if (element.attribute(HTML::AttributeNames::name) == name)
-            elements.append(&element);
+            elements.append(element);
         return IterationDecision::Continue;
     });
     return elements;
@@ -408,10 +403,18 @@ Color Document::visited_link_color() const
     return frame()->page().palette().visited_link();
 }
 
+static JS::VM& main_thread_vm()
+{
+    static RefPtr<JS::VM> vm;
+    if (!vm)
+        vm = JS::VM::create();
+    return *vm;
+}
+
 JS::Interpreter& Document::interpreter()
 {
     if (!m_interpreter)
-        m_interpreter = JS::Interpreter::create<Bindings::WindowObject>(*m_window);
+        m_interpreter = JS::Interpreter::create<Bindings::WindowObject>(main_thread_vm(), *m_window);
     return *m_interpreter;
 }
 
@@ -426,7 +429,7 @@ JS::Value Document::run_javascript(const StringView& source)
     auto& interpreter = document().interpreter();
     auto result = interpreter.run(interpreter.global_object(), *program);
     if (interpreter.exception())
-        interpreter.clear_exception();
+        interpreter.vm().clear_exception();
     return result;
 }
 

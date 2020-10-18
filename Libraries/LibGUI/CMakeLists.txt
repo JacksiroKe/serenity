@@ -17,7 +17,6 @@ set(SOURCES
     ComboBox.cpp
     Command.cpp
     ControlBoxButton.cpp
-    CppLexer.cpp
     CppSyntaxHighlighter.cpp
     Desktop.cpp
     Dialog.cpp
@@ -39,14 +38,14 @@ set(SOURCES
     IconView.cpp
     ImageWidget.cpp
     InputBox.cpp
-    JsonArrayModel.cpp
     JSSyntaxHighlighter.cpp
+    JsonArrayModel.cpp
     Label.cpp
     Layout.cpp
     LazyWidget.cpp
     ListView.cpp
-    MenuBar.cpp
     Menu.cpp
+    MenuBar.cpp
     MenuItem.cpp
     MessageBox.cpp
     Model.cpp
@@ -60,8 +59,9 @@ set(SOURCES
     RadioButton.cpp
     ResizeCorner.cpp
     RunningProcessesModel.cpp
-    ScrollableWidget.cpp
     ScrollBar.cpp
+    ScrollableWidget.cpp
+    ShellSyntaxHighlighter.cpp
     Shortcut.cpp
     Slider.cpp
     SortingProxyModel.cpp
@@ -70,13 +70,13 @@ set(SOURCES
     StackWidget.cpp
     StatusBar.cpp
     SyntaxHighlighter.cpp
-    TableView.cpp
     TabWidget.cpp
+    TableView.cpp
     TextBox.cpp
     TextDocument.cpp
     TextEditor.cpp
-    ToolBarContainer.cpp
     ToolBar.cpp
+    ToolBarContainer.cpp
     TreeView.cpp
     UndoStack.cpp
     Variant.cpp
@@ -95,4 +95,4 @@ set(GENERATED_SOURCES
 )
 
 serenity_lib(LibGUI gui)
-target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThread)
+target_link_libraries(LibGUI LibCore LibGfx LibIPC LibThread LibCpp)

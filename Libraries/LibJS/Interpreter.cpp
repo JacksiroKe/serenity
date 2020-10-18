@@ -44,14 +44,17 @@
 
 namespace JS {
 
-Interpreter::Interpreter()
-    : m_heap(*this)
-    , m_console(*this)
+NonnullOwnPtr<Interpreter> Interpreter::create_with_existing_global_object(GlobalObject& global_object)
 {
-#define __JS_ENUMERATE(SymbolName, snake_name) \
-    m_well_known_symbol_##snake_name = js_symbol(*this, "Symbol." #SymbolName, false);
-    JS_ENUMERATE_WELL_KNOWN_SYMBOLS
-#undef __JS_ENUMERATE
+    DeferGC defer_gc(global_object.heap());
+    auto interpreter = adopt_own(*new Interpreter(global_object.vm()));
+    interpreter->m_global_object = make_handle(static_cast<Object*>(&global_object));
+    return interpreter;
+}
+
+Interpreter::Interpreter(VM& vm)
+    : m_vm(vm)
+{
 }
 
 Interpreter::~Interpreter()
@@ -60,61 +63,45 @@ Interpreter::~Interpreter()
 
 Value Interpreter::run(GlobalObject& global_object, const Program& program)
 {
-    ASSERT(!exception());
+    ASSERT(!vm().exception());
 
-    if (m_call_stack.is_empty()) {
-        CallFrame global_call_frame;
-        global_call_frame.this_value = &global_object;
-        global_call_frame.function_name = "(global execution context)";
-        global_call_frame.environment = heap().allocate<LexicalEnvironment>(global_object, LexicalEnvironment::EnvironmentRecordType::Global);
-        global_call_frame.environment->bind_this_value(&global_object);
-        if (exception())
-            return {};
-        m_call_stack.append(move(global_call_frame));
-    }
+    VM::InterpreterExecutionScope scope(*this);
 
-    return program.execute(*this, global_object);
+    CallFrame global_call_frame;
+    global_call_frame.this_value = &global_object;
+    static FlyString global_execution_context_name = "(global execution context)";
+    global_call_frame.function_name = global_execution_context_name;
+    global_call_frame.environment = heap().allocate<LexicalEnvironment>(global_object, LexicalEnvironment::EnvironmentRecordType::Global);
+    global_call_frame.environment->bind_this_value(global_object, &global_object);
+    global_call_frame.is_strict_mode = program.is_strict_mode();
+    if (vm().exception())
+        return {};
+    vm().call_stack().append(move(global_call_frame));
+
+    auto result = program.execute(*this, global_object);
+    vm().pop_call_frame();
+    return result;
 }
 
-Value Interpreter::execute_statement(GlobalObject& global_object, const Statement& statement, ArgumentVector arguments, ScopeType scope_type)
+GlobalObject& Interpreter::global_object()
 {
-    if (!statement.is_scope_node())
-        return statement.execute(*this, global_object);
+    return static_cast<GlobalObject&>(*m_global_object.cell());
+}
 
-    auto& block = static_cast<const ScopeNode&>(statement);
-    enter_scope(block, move(arguments), scope_type, global_object);
-
-    if (block.children().is_empty())
-        m_last_value = js_undefined();
-
-    for (auto& node : block.children()) {
-        m_last_value = node.execute(*this, global_object);
-        if (should_unwind()) {
-            if (!block.label().is_null() && should_unwind_until(ScopeType::Breakable, block.label()))
-                stop_unwind();
-            break;
-        }
-    }
-
-    bool did_return = m_unwind_until == ScopeType::Function;
-
-    if (m_unwind_until == scope_type)
-        m_unwind_until = ScopeType::None;
-
-    exit_scope(block);
-
-    return did_return ? m_last_value : js_undefined();
+const GlobalObject& Interpreter::global_object() const
+{
+    return static_cast<const GlobalObject&>(*m_global_object.cell());
 }
 
 void Interpreter::enter_scope(const ScopeNode& scope_node, ArgumentVector arguments, ScopeType scope_type, GlobalObject& global_object)
 {
     for (auto& declaration : scope_node.functions()) {
-        auto* function = ScriptFunction::create(global_object, declaration.name(), declaration.body(), declaration.parameters(), declaration.function_length(), current_environment());
-        set_variable(declaration.name(), function, global_object);
+        auto* function = ScriptFunction::create(global_object, declaration.name(), declaration.body(), declaration.parameters(), declaration.function_length(), current_environment(), declaration.is_strict_mode());
+        vm().set_variable(declaration.name(), function, global_object);
     }
 
     if (scope_type == ScopeType::Function) {
-        m_scope_stack.append({ scope_type, scope_node, false });
+        push_scope({ scope_type, scope_node, false });
         return;
     }
 
@@ -141,11 +128,11 @@ void Interpreter::enter_scope(const ScopeNode& scope_node, ArgumentVector argume
 
     if (!scope_variables_with_declaration_kind.is_empty()) {
         auto* block_lexical_environment = heap().allocate<LexicalEnvironment>(global_object, move(scope_variables_with_declaration_kind), current_environment());
-        m_call_stack.last().environment = block_lexical_environment;
+        vm().call_stack().last().environment = block_lexical_environment;
         pushed_lexical_environment = true;
     }
 
-    m_scope_stack.append({ scope_type, scope_node, pushed_lexical_environment });
+    push_scope({ scope_type, scope_node, pushed_lexical_environment });
 }
 
 void Interpreter::exit_scope(const ScopeNode& scope_node)
@@ -153,238 +140,49 @@ void Interpreter::exit_scope(const ScopeNode& scope_node)
     while (!m_scope_stack.is_empty()) {
         auto popped_scope = m_scope_stack.take_last();
         if (popped_scope.pushed_environment)
-            m_call_stack.last().environment = m_call_stack.last().environment->parent();
+            vm().call_frame().environment = vm().call_frame().environment->parent();
         if (popped_scope.scope_node.ptr() == &scope_node)
             break;
     }
 
     // If we unwind all the way, just reset m_unwind_until so that future "return" doesn't break.
     if (m_scope_stack.is_empty())
-        m_unwind_until = ScopeType::None;
+        vm().unwind(ScopeType::None);
 }
 
-void Interpreter::set_variable(const FlyString& name, Value value, GlobalObject& global_object, bool first_assignment)
+void Interpreter::push_scope(ScopeFrame frame)
 {
-    if (m_call_stack.size()) {
-        for (auto* environment = current_environment(); environment; environment = environment->parent()) {
-            auto possible_match = environment->get(name);
-            if (possible_match.has_value()) {
-                if (!first_assignment && possible_match.value().declaration_kind == DeclarationKind::Const) {
-                    throw_exception<TypeError>(ErrorType::InvalidAssignToConst);
-                    return;
-                }
+    m_scope_stack.append(move(frame));
+}
 
-                environment->set(name, { value, possible_match.value().declaration_kind });
-                return;
-            }
+Value Interpreter::execute_statement(GlobalObject& global_object, const Statement& statement, ArgumentVector arguments, ScopeType scope_type)
+{
+    if (!statement.is_scope_node())
+        return statement.execute(*this, global_object);
+
+    auto& block = static_cast<const ScopeNode&>(statement);
+    enter_scope(block, move(arguments), scope_type, global_object);
+
+    if (block.children().is_empty())
+        vm().set_last_value({}, js_undefined());
+
+    for (auto& node : block.children()) {
+        vm().set_last_value({}, node.execute(*this, global_object));
+        if (vm().should_unwind()) {
+            if (!block.label().is_null() && vm().should_unwind_until(ScopeType::Breakable, block.label()))
+                vm().stop_unwind();
+            break;
         }
     }
 
-    global_object.put(move(name), move(value));
-}
+    bool did_return = vm().unwind_until() == ScopeType::Function;
 
-Value Interpreter::get_variable(const FlyString& name, GlobalObject& global_object)
-{
-    if (m_call_stack.size()) {
-        for (auto* environment = current_environment(); environment; environment = environment->parent()) {
-            auto possible_match = environment->get(name);
-            if (possible_match.has_value())
-                return possible_match.value().value;
-        }
-    }
-    auto value = global_object.get(name);
-    if (m_underscore_is_last_value && name == "_" && value.is_empty())
-        return m_last_value;
-    return value;
-}
+    if (vm().unwind_until() == scope_type)
+        vm().unwind(ScopeType::None);
 
-Reference Interpreter::get_reference(const FlyString& name)
-{
-    if (m_call_stack.size()) {
-        for (auto* environment = current_environment(); environment; environment = environment->parent()) {
-            auto possible_match = environment->get(name);
-            if (possible_match.has_value())
-                return { Reference::LocalVariable, name };
-        }
-    }
-    return { Reference::GlobalVariable, name };
-}
+    exit_scope(block);
 
-Symbol* Interpreter::get_global_symbol(const String& description)
-{
-    auto result = m_global_symbol_map.get(description);
-    if (result.has_value())
-        return result.value();
-
-    auto new_global_symbol = js_symbol(*this, description, true);
-    m_global_symbol_map.set(description, new_global_symbol);
-    return new_global_symbol;
-}
-
-void Interpreter::gather_roots(Badge<Heap>, HashTable<Cell*>& roots)
-{
-    roots.set(m_global_object);
-    roots.set(m_exception);
-
-    if (m_last_value.is_cell())
-        roots.set(m_last_value.as_cell());
-
-    for (auto& call_frame : m_call_stack) {
-        if (call_frame.this_value.is_cell())
-            roots.set(call_frame.this_value.as_cell());
-        for (auto& argument : call_frame.arguments) {
-            if (argument.is_cell())
-                roots.set(argument.as_cell());
-        }
-        roots.set(call_frame.environment);
-    }
-
-#define __JS_ENUMERATE(SymbolName, snake_name) \
-    roots.set(well_known_symbol_##snake_name());
-    JS_ENUMERATE_WELL_KNOWN_SYMBOLS
-#undef __JS_ENUMERATE
-
-    for (auto& symbol : m_global_symbol_map)
-        roots.set(symbol.value);
-}
-
-Value Interpreter::call_internal(Function& function, Value this_value, Optional<MarkedValueList> arguments)
-{
-    ASSERT(!exception());
-
-    auto& call_frame = push_call_frame();
-    call_frame.function_name = function.name();
-    call_frame.this_value = function.bound_this().value_or(this_value);
-    call_frame.arguments = function.bound_arguments();
-    if (arguments.has_value())
-        call_frame.arguments.append(arguments.value().values());
-    call_frame.environment = function.create_environment();
-
-    ASSERT(call_frame.environment->this_binding_status() == LexicalEnvironment::ThisBindingStatus::Uninitialized);
-    call_frame.environment->bind_this_value(call_frame.this_value);
-
-    auto result = function.call(*this);
-    pop_call_frame();
-    return result;
-}
-
-Value Interpreter::construct(Function& function, Function& new_target, Optional<MarkedValueList> arguments, GlobalObject& global_object)
-{
-    auto& call_frame = push_call_frame();
-    call_frame.function_name = function.name();
-    call_frame.arguments = function.bound_arguments();
-    if (arguments.has_value())
-        call_frame.arguments.append(arguments.value().values());
-    call_frame.environment = function.create_environment();
-
-    current_environment()->set_new_target(&new_target);
-
-    Object* new_object = nullptr;
-    if (function.constructor_kind() == Function::ConstructorKind::Base) {
-        new_object = Object::create_empty(global_object);
-        current_environment()->bind_this_value(new_object);
-        if (exception())
-            return {};
-        auto prototype = new_target.get("prototype");
-        if (exception())
-            return {};
-        if (prototype.is_object()) {
-            new_object->set_prototype(&prototype.as_object());
-            if (exception())
-                return {};
-        }
-    }
-
-    // If we are a Derived constructor, |this| has not been constructed before super is called.
-    Value this_value = function.constructor_kind() == Function::ConstructorKind::Base ? new_object : Value {};
-    call_frame.this_value = this_value;
-    auto result = function.construct(*this, new_target);
-
-    this_value = current_environment()->get_this_binding();
-    pop_call_frame();
-
-    // If we are constructing an instance of a derived class,
-    // set the prototype on objects created by constructors that return an object (i.e. NativeFunction subclasses).
-    if (function.constructor_kind() == Function::ConstructorKind::Base && new_target.constructor_kind() == Function::ConstructorKind::Derived && result.is_object()) {
-        current_environment()->replace_this_binding(result);
-        auto prototype = new_target.get("prototype");
-        if (exception())
-            return {};
-        if (prototype.is_object()) {
-            result.as_object().set_prototype(&prototype.as_object());
-            if (exception())
-                return {};
-        }
-        return result;
-    }
-
-    if (exception())
-        return {};
-
-    if (result.is_object())
-        return result;
-
-    return this_value;
-}
-
-void Interpreter::throw_exception(Exception* exception)
-{
-#ifdef INTERPRETER_DEBUG
-    if (exception->value().is_object() && exception->value().as_object().is_error()) {
-        auto& error = static_cast<Error&>(exception->value().as_object());
-        dbg() << "Throwing JavaScript Error: " << error.name() << ", " << error.message();
-
-        for (ssize_t i = m_call_stack.size() - 1; i >= 0; --i) {
-            auto function_name = m_call_stack[i].function_name;
-            if (function_name.is_empty())
-                function_name = "<anonymous>";
-            dbg() << "  " << function_name;
-        }
-    }
-#endif
-    m_exception = exception;
-    unwind(ScopeType::Try);
-}
-
-GlobalObject& Interpreter::global_object()
-{
-    return static_cast<GlobalObject&>(*m_global_object);
-}
-
-const GlobalObject& Interpreter::global_object() const
-{
-    return static_cast<const GlobalObject&>(*m_global_object);
-}
-
-String Interpreter::join_arguments() const
-{
-    StringBuilder joined_arguments;
-    for (size_t i = 0; i < argument_count(); ++i) {
-        joined_arguments.append(argument(i).to_string_without_side_effects().characters());
-        if (i != argument_count() - 1)
-            joined_arguments.append(' ');
-    }
-    return joined_arguments.build();
-}
-
-Value Interpreter::resolve_this_binding() const
-{
-    return get_this_environment()->get_this_binding();
-}
-
-const LexicalEnvironment* Interpreter::get_this_environment() const
-{
-    // We will always return because the Global environment will always be reached, which has a |this| binding.
-    for (const LexicalEnvironment* environment = current_environment(); environment; environment = environment->parent()) {
-        if (environment->has_this_binding())
-            return environment;
-    }
-    ASSERT_NOT_REACHED();
-}
-
-Value Interpreter::get_new_target() const
-{
-    return get_this_environment()->new_target();
+    return did_return ? vm().last_value() : js_undefined();
 }
 
 }

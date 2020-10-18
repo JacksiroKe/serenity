@@ -36,58 +36,70 @@
 namespace JS {
 
 FunctionConstructor::FunctionConstructor(GlobalObject& global_object)
-    : NativeFunction("Function", *global_object.function_prototype())
+    : NativeFunction(vm().names.Function, *global_object.function_prototype())
 {
 }
 
 void FunctionConstructor::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     NativeFunction::initialize(global_object);
-    define_property("prototype", global_object.function_prototype(), 0);
-    define_property("length", Value(1), Attribute::Configurable);
+    define_property(vm.names.prototype, global_object.function_prototype(), 0);
+    define_property(vm.names.length, Value(1), Attribute::Configurable);
 }
 
 FunctionConstructor::~FunctionConstructor()
 {
 }
 
-Value FunctionConstructor::call(Interpreter& interpreter)
+Value FunctionConstructor::call()
 {
-    return construct(interpreter, *this);
+    return construct(*this);
 }
 
-Value FunctionConstructor::construct(Interpreter& interpreter, Function&)
+Value FunctionConstructor::construct(Function&)
 {
+    auto& vm = this->vm();
     String parameters_source = "";
     String body_source = "";
-    if (interpreter.argument_count() == 1) {
-        body_source = interpreter.argument(0).to_string(interpreter);
-        if (interpreter.exception())
+    if (vm.argument_count() == 1) {
+        body_source = vm.argument(0).to_string(global_object());
+        if (vm.exception())
             return {};
     }
-    if (interpreter.argument_count() > 1) {
+    if (vm.argument_count() > 1) {
         Vector<String> parameters;
-        for (size_t i = 0; i < interpreter.argument_count() - 1; ++i) {
-            parameters.append(interpreter.argument(i).to_string(interpreter));
-            if (interpreter.exception())
+        for (size_t i = 0; i < vm.argument_count() - 1; ++i) {
+            parameters.append(vm.argument(i).to_string(global_object()));
+            if (vm.exception())
                 return {};
         }
         StringBuilder parameters_builder;
         parameters_builder.join(',', parameters);
         parameters_source = parameters_builder.build();
-        body_source = interpreter.argument(interpreter.argument_count() - 1).to_string(interpreter);
-        if (interpreter.exception())
+        body_source = vm.argument(vm.argument_count() - 1).to_string(global_object());
+        if (vm.exception())
             return {};
     }
-    auto source = String::format("function anonymous(%s) { %s }", parameters_source.characters(), body_source.characters());
+    auto source = String::formatted("function anonymous({}) {{ {} }}", parameters_source, body_source);
     auto parser = Parser(Lexer(source));
     auto function_expression = parser.parse_function_node<FunctionExpression>();
     if (parser.has_errors()) {
         auto error = parser.errors()[0];
-        interpreter.throw_exception<SyntaxError>(error.to_string());
+        vm.throw_exception<SyntaxError>(global_object(), error.to_string());
         return {};
     }
-    return function_expression->execute(interpreter, global_object());
+
+    OwnPtr<Interpreter> local_interpreter;
+    Interpreter* interpreter = vm.interpreter_if_exists();
+
+    if (!interpreter) {
+        local_interpreter = Interpreter::create_with_existing_global_object(global_object());
+        interpreter = local_interpreter.ptr();
+    }
+
+    VM::InterpreterExecutionScope scope(*interpreter);
+    return function_expression->execute(*interpreter, global_object());
 }
 
 }

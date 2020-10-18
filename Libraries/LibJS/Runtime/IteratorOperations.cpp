@@ -24,7 +24,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/IteratorOperations.h>
@@ -33,27 +32,27 @@ namespace JS {
 
 Object* get_iterator(GlobalObject& global_object, Value value, String hint, Value method)
 {
-    auto& interpreter = global_object.interpreter();
+    auto& vm = global_object.vm();
     ASSERT(hint == "sync" || hint == "async");
     if (method.is_empty()) {
         if (hint == "async")
             TODO();
-        auto object = value.to_object(interpreter, global_object);
+        auto object = value.to_object(global_object);
         if (!object)
             return {};
-        method = object->get(interpreter.well_known_symbol_iterator());
-        if (interpreter.exception())
+        method = object->get(global_object.vm().well_known_symbol_iterator());
+        if (vm.exception())
             return {};
     }
     if (!method.is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotIterable, value.to_string_without_side_effects().characters());
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotIterable, value.to_string_without_side_effects());
         return nullptr;
     }
-    auto iterator = interpreter.call(method.as_function(), value);
-    if (interpreter.exception())
+    auto iterator = vm.call(method.as_function(), value);
+    if (vm.exception())
         return {};
     if (!iterator.is_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotIterable, value.to_string_without_side_effects().characters());
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotIterable, value.to_string_without_side_effects());
         return nullptr;
     }
     return &iterator.as_object();
@@ -61,26 +60,27 @@ Object* get_iterator(GlobalObject& global_object, Value value, String hint, Valu
 
 Object* iterator_next(Object& iterator, Value value)
 {
-    auto& interpreter = iterator.interpreter();
-    auto next_method = iterator.get("next");
-    if (interpreter.exception())
+    auto& vm = iterator.vm();
+    auto& global_object = iterator.global_object();
+    auto next_method = iterator.get(vm.names.next);
+    if (vm.exception())
         return {};
 
     if (!next_method.is_function()) {
-        interpreter.throw_exception<TypeError>(ErrorType::IterableNextNotAFunction);
+        vm.throw_exception<TypeError>(global_object, ErrorType::IterableNextNotAFunction);
         return nullptr;
     }
 
     Value result;
     if (value.is_empty())
-        result = interpreter.call(next_method.as_function(), &iterator);
+        result = vm.call(next_method.as_function(), &iterator);
     else
-        result = interpreter.call(next_method.as_function(), &iterator, value);
+        result = vm.call(next_method.as_function(), &iterator, value);
 
-    if (interpreter.exception())
+    if (vm.exception())
         return {};
     if (!result.is_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::IterableNextBadReturn);
+        vm.throw_exception<TypeError>(global_object, ErrorType::IterableNextBadReturn);
         return nullptr;
     }
 
@@ -95,15 +95,16 @@ void iterator_close(Object& iterator)
 
 Value create_iterator_result_object(GlobalObject& global_object, Value value, bool done)
 {
+    auto& vm = global_object.vm();
     auto* object = Object::create_empty(global_object);
-    object->define_property("value", value);
-    object->define_property("done", Value(done));
+    object->define_property(vm.names.value, value);
+    object->define_property(vm.names.done, Value(done));
     return object;
 }
 
 void get_iterator_values(GlobalObject& global_object, Value value, AK::Function<IterationDecision(Value)> callback)
 {
-    auto& interpreter = global_object.interpreter();
+    auto& vm = global_object.vm();
 
     auto iterator = get_iterator(global_object, value);
     if (!iterator)
@@ -114,15 +115,15 @@ void get_iterator_values(GlobalObject& global_object, Value value, AK::Function<
         if (!next_object)
             return;
 
-        auto done_property = next_object->get("done");
-        if (interpreter.exception())
+        auto done_property = next_object->get(vm.names.done);
+        if (vm.exception())
             return;
 
         if (!done_property.is_empty() && done_property.to_boolean())
             return;
 
-        auto next_value = next_object->get("value");
-        if (interpreter.exception())
+        auto next_value = next_object->get(vm.names.value);
+        if (vm.exception())
             return;
 
         auto result = callback(next_value);

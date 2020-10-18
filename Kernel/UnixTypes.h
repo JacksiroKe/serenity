@@ -60,6 +60,7 @@ enum {
     _SC_NPROCESSORS_CONF,
     _SC_NPROCESSORS_ONLN,
     _SC_PAGESIZE,
+    _SC_OPEN_MAX
 };
 
 #define PERF_EVENT_MALLOC 1
@@ -457,17 +458,27 @@ struct pollfd {
 #define SHUT_WR 2
 #define SHUT_RDWR 3
 
+#define MSG_TRUNC 0x1
+#define MSG_CTRUNC 0x2
 #define MSG_DONTWAIT 0x40
 
 #define SOL_SOCKET 1
 
-#define SO_RCVTIMEO 1
-#define SO_SNDTIMEO 2
-#define SO_ERROR 4
-#define SO_PEERCRED 5
-#define SO_REUSEADDR 6
-#define SO_BINDTODEVICE 7
-#define SO_KEEPALIVE 9
+enum {
+    SO_RCVTIMEO,
+    SO_SNDTIMEO,
+    SO_TYPE,
+    SO_ERROR,
+    SO_PEERCRED,
+    SO_REUSEADDR,
+    SO_BINDTODEVICE,
+    SO_KEEPALIVE,
+    SO_TIMESTAMP,
+};
+
+enum {
+    SCM_TIMESTAMP,
+};
 
 #define IPPROTO_IP 0
 #define IPPROTO_ICMP 1
@@ -550,6 +561,22 @@ struct utsname {
 struct iovec {
     void* iov_base;
     size_t iov_len;
+};
+
+struct cmsghdr {
+    socklen_t cmsg_len;
+    int cmsg_level;
+    int cmsg_type;
+};
+
+struct msghdr {
+    void* msg_name;
+    socklen_t msg_namelen;
+    struct iovec* msg_iov;
+    int msg_iovlen;
+    void* msg_control;
+    socklen_t msg_controllen;
+    int msg_flags;
 };
 
 struct sched_param {

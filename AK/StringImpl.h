@@ -70,6 +70,13 @@ public:
         return characters()[i];
     }
 
+    bool operator==(const StringImpl& other) const
+    {
+        if (length() != other.length())
+            return false;
+        return !__builtin_memcmp(characters(), other.characters(), length());
+    }
+
     unsigned hash() const
     {
         if (!m_has_hash)
@@ -122,6 +129,14 @@ inline constexpr u32 string_hash(const char* characters, size_t length)
     hash += hash << 15;
     return hash;
 }
+
+template<>
+struct Formatter<StringImpl> : Formatter<StringView> {
+    void format(TypeErasedFormatParams& params, FormatBuilder& builder, const StringImpl& value)
+    {
+        Formatter<StringView>::format(params, builder, { value.characters(), value.length() });
+    }
+};
 
 }
 

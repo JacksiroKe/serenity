@@ -30,6 +30,7 @@
 #include <LibMarkdown/Heading.h>
 #include <LibMarkdown/List.h>
 #include <LibMarkdown/Paragraph.h>
+#include <LibMarkdown/Table.h>
 
 namespace Markdown {
 
@@ -52,12 +53,12 @@ String Document::render_to_html() const
     return builder.build();
 }
 
-String Document::render_for_terminal() const
+String Document::render_for_terminal(size_t view_width) const
 {
     StringBuilder builder;
 
     for (auto& block : m_blocks) {
-        auto s = block.render_for_terminal();
+        auto s = block.render_for_terminal(view_width);
         builder.append(s);
     }
 
@@ -80,6 +81,7 @@ OwnPtr<Document> Document::parse(const StringView& str)
     auto lines = lines_vec.begin();
     auto document = make<Document>();
     auto& blocks = document->m_blocks;
+    NonnullOwnPtrVector<Paragraph::Line> paragraph_lines;
 
     while (true) {
         if (lines.is_end())
@@ -90,10 +92,30 @@ OwnPtr<Document> Document::parse(const StringView& str)
             continue;
         }
 
-        bool any = helper<List>(lines, blocks) || helper<Paragraph>(lines, blocks) || helper<CodeBlock>(lines, blocks) || helper<Heading>(lines, blocks);
+        bool any = helper<Table>(lines, blocks) || helper<List>(lines, blocks) || helper<CodeBlock>(lines, blocks)
+            || helper<Heading>(lines, blocks);
 
-        if (!any)
+        if (any) {
+            if (!paragraph_lines.is_empty()) {
+                auto last_block = document->m_blocks.take_last();
+                auto paragraph = make<Paragraph>(move(paragraph_lines));
+                document->m_blocks.append(move(paragraph));
+                document->m_blocks.append(move(last_block));
+                paragraph_lines.clear();
+            }
+            continue;
+        }
+
+        auto line = Paragraph::Line::parse(lines);
+        if (!line)
             return nullptr;
+
+        paragraph_lines.append(line.release_nonnull());
+    }
+
+    if (!paragraph_lines.is_empty()) {
+        auto paragraph = make<Paragraph>(move(paragraph_lines));
+        document->m_blocks.append(move(paragraph));
     }
 
     return document;

@@ -25,7 +25,6 @@
  */
 
 #include <LibJS/Heap/DeferGC.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/Shape.h>
 
@@ -39,6 +38,7 @@ Shape* Shape::create_unique_clone() const
     ensure_property_table();
     new_shape->ensure_property_table();
     (*new_shape->m_property_table) = *m_property_table;
+    new_shape->m_property_count = new_shape->m_property_table->size();
     return new_shape;
 }
 
@@ -73,20 +73,22 @@ Shape::Shape(GlobalObject& global_object)
 }
 
 Shape::Shape(Shape& previous_shape, const StringOrSymbol& property_name, PropertyAttributes attributes, TransitionType transition_type)
-    : m_global_object(previous_shape.m_global_object)
+    : m_attributes(attributes)
+    , m_transition_type(transition_type)
+    , m_global_object(previous_shape.m_global_object)
     , m_previous(&previous_shape)
     , m_property_name(property_name)
-    , m_attributes(attributes)
     , m_prototype(previous_shape.m_prototype)
-    , m_transition_type(transition_type)
+    , m_property_count(transition_type == TransitionType::Put ? previous_shape.m_property_count + 1 : previous_shape.m_property_count)
 {
 }
 
 Shape::Shape(Shape& previous_shape, Object* new_prototype)
-    : m_global_object(previous_shape.m_global_object)
+    : m_transition_type(TransitionType::Prototype)
+    , m_global_object(previous_shape.m_global_object)
     , m_previous(&previous_shape)
     , m_prototype(new_prototype)
-    , m_transition_type(TransitionType::Prototype)
+    , m_property_count(previous_shape.m_property_count)
 {
 }
 
@@ -104,13 +106,16 @@ void Shape::visit_children(Cell::Visitor& visitor)
     for (auto& it : m_forward_transitions)
         visitor.visit(it.value);
 
-    ensure_property_table();
-    for (auto& it : *m_property_table)
-        it.key.visit_children(visitor);
+    if (m_property_table) {
+        for (auto& it : *m_property_table)
+            it.key.visit_children(visitor);
+    }
 }
 
 Optional<PropertyMetadata> Shape::lookup(const StringOrSymbol& property_name) const
 {
+    if (m_property_count == 0)
+        return {};
     auto property = property_table().get(property_name);
     if (!property.has_value())
         return {};
@@ -125,13 +130,13 @@ const HashMap<StringOrSymbol, PropertyMetadata>& Shape::property_table() const
 
 size_t Shape::property_count() const
 {
-    return property_table().size();
+    return m_property_count;
 }
 
 Vector<Shape::Property> Shape::property_table_ordered() const
 {
     auto vec = Vector<Shape::Property>();
-    vec.resize(property_table().size());
+    vec.resize(property_count());
 
     for (auto& it : property_table()) {
         vec[it.value.offset] = { it.key, it.value };
@@ -146,14 +151,19 @@ void Shape::ensure_property_table() const
         return;
     m_property_table = make<HashMap<StringOrSymbol, PropertyMetadata>>();
 
-    DeferGC defer(heap());
+    u32 next_offset = 0;
 
-    Vector<const Shape*> transition_chain;
-    for (auto* shape = this; shape->m_previous; shape = shape->m_previous) {
+    Vector<const Shape*, 64> transition_chain;
+    for (auto* shape = m_previous; shape; shape = shape->m_previous) {
+        if (shape->m_property_table) {
+            *m_property_table = *shape->m_property_table;
+            next_offset = shape->m_property_count;
+            break;
+        }
         transition_chain.append(shape);
     }
+    transition_chain.append(this);
 
-    u32 next_offset = 0;
     for (ssize_t i = transition_chain.size() - 1; i >= 0; --i) {
         auto* shape = transition_chain[i];
         if (!shape->m_property_name.is_valid()) {
@@ -176,26 +186,37 @@ void Shape::add_property_to_unique_shape(const StringOrSymbol& property_name, Pr
     ASSERT(m_property_table);
     ASSERT(!m_property_table->contains(property_name));
     m_property_table->set(property_name, { m_property_table->size(), attributes });
+    ++m_property_count;
 }
 
 void Shape::reconfigure_property_in_unique_shape(const StringOrSymbol& property_name, PropertyAttributes attributes)
 {
     ASSERT(is_unique());
     ASSERT(m_property_table);
-    ASSERT(m_property_table->contains(property_name));
-    m_property_table->set(property_name, { m_property_table->size(), attributes });
+    auto it = m_property_table->find(property_name);
+    ASSERT(it != m_property_table->end());
+    it->value.attributes = attributes;
+    m_property_table->set(property_name, it->value);
 }
 
 void Shape::remove_property_from_unique_shape(const StringOrSymbol& property_name, size_t offset)
 {
     ASSERT(is_unique());
     ASSERT(m_property_table);
-    m_property_table->remove(property_name);
+    if (m_property_table->remove(property_name))
+        --m_property_count;
     for (auto& it : *m_property_table) {
         ASSERT(it.value.offset != offset);
         if (it.value.offset > offset)
             --it.value.offset;
     }
+}
+
+void Shape::add_property_without_transition(const StringOrSymbol& property_name, PropertyAttributes attributes)
+{
+    ensure_property_table();
+    if (m_property_table->set(property_name, { m_property_count, attributes }) == AK::HashSetResult::InsertedNewEntry)
+        ++m_property_count;
 }
 
 }

@@ -182,7 +182,7 @@ size_t strftime(char* destination, size_t max_size, const char* format, const st
     };
     const char mon_long_names[12][10] = {
         "January", "February", "March", "April", "May", "June",
-        "July", "Auguest", "September", "October", "November", "December"
+        "July", "August", "September", "October", "November", "December"
     };
 
     StringBuilder builder { max_size };
@@ -361,5 +361,10 @@ int nanosleep(const struct timespec* requested_sleep, struct timespec* remaining
 int clock_getres(clockid_t, struct timespec*)
 {
     ASSERT_NOT_REACHED();
+}
+
+double difftime(time_t t1, time_t t0)
+{
+    return (double)(t1 - t0);
 }
 }

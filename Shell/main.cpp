@@ -34,112 +34,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 
 RefPtr<Line::Editor> editor;
-Shell* s_shell;
-
-void FileDescriptionCollector::collect()
-{
-    for (auto fd : m_fds)
-        close(fd);
-    m_fds.clear();
-}
-
-FileDescriptionCollector::~FileDescriptionCollector()
-{
-    collect();
-}
-
-void FileDescriptionCollector::add(int fd)
-{
-    m_fds.append(fd);
-}
-
-SavedFileDescriptors::SavedFileDescriptors(const NonnullRefPtrVector<AST::Rewiring>& intended_rewirings)
-{
-    for (auto& rewiring : intended_rewirings) {
-        int new_fd = dup(rewiring.source_fd);
-        if (new_fd < 0) {
-            if (errno != EBADF)
-                perror("dup");
-            // The fd that will be overwritten isn't open right now,
-            // it will be cleaned up by the exec()-side collector
-            // and we have nothing to do here, so just ignore this error.
-            continue;
-        }
-
-        auto flags = fcntl(new_fd, F_GETFL);
-        auto rc = fcntl(new_fd, F_SETFL, flags | FD_CLOEXEC);
-        ASSERT(rc == 0);
-
-        m_saves.append({ rewiring.source_fd, new_fd });
-        m_collector.add(new_fd);
-    }
-}
-
-SavedFileDescriptors::~SavedFileDescriptors()
-{
-    for (auto& save : m_saves) {
-        if (dup2(save.saved, save.original) < 0) {
-            perror("dup2(~SavedFileDescriptors)");
-            continue;
-        }
-    }
-}
-
-void Shell::setup_signals()
-{
-    Core::EventLoop::register_signal(SIGCHLD, [](int) {
-        auto& jobs = s_shell->jobs;
-        Vector<u64> disowned_jobs;
-        for (auto& it : jobs) {
-            auto job_id = it.key;
-            auto& job = *it.value;
-            int wstatus = 0;
-            auto child_pid = waitpid(job.pid(), &wstatus, WNOHANG | WUNTRACED);
-            if (child_pid < 0) {
-                if (errno == ECHILD) {
-                    // The child process went away before we could process its death, just assume it exited all ok.
-                    // FIXME: This should never happen, the child should stay around until we do the waitpid above.
-                    dbg() << "Child process gone, cannot get exit code for " << job_id;
-                    child_pid = job.pid();
-                } else {
-                    ASSERT_NOT_REACHED();
-                }
-            }
-#ifndef __serenity__
-            if (child_pid == 0) {
-                // Linux: if child didn't "change state", but existed.
-                continue;
-            }
-#endif
-            if (child_pid == job.pid()) {
-                if (WIFSIGNALED(wstatus) && !WIFSTOPPED(wstatus)) {
-                    job.set_signalled(WTERMSIG(wstatus));
-                } else if (WIFEXITED(wstatus)) {
-                    job.set_has_exit(WEXITSTATUS(wstatus));
-                } else if (WIFSTOPPED(wstatus)) {
-                    job.unblock();
-                    job.set_is_suspended(true);
-                }
-            }
-            if (job.should_be_disowned())
-                disowned_jobs.append(job_id);
-        }
-        for (auto job_id : disowned_jobs)
-            jobs.remove(job_id);
-    });
-
-    Core::EventLoop::register_signal(SIGTSTP, [](auto) {
-        auto job = s_shell->current_job();
-        s_shell->kill_job(job, SIGTSTP);
-        if (job) {
-            job->set_is_suspended(true);
-            job->unblock();
-        }
-    });
-}
+Shell::Shell* s_shell;
 
 int main(int argc, char** argv)
 {
@@ -163,6 +60,11 @@ int main(int argc, char** argv)
         s_shell->save_history();
     });
 
+    editor = Line::Editor::construct();
+
+    auto shell = Shell::Shell::construct(*editor);
+    s_shell = shell.ptr();
+
     s_shell->setup_signals();
 
 #ifndef __serenity__
@@ -170,7 +72,7 @@ int main(int argc, char** argv)
     sigemptyset(&blocked);
     sigaddset(&blocked, SIGTTOU);
     sigaddset(&blocked, SIGTTIN);
-    pthread_sigmask(SIG_BLOCK, &blocked, NULL);
+    pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
 #endif
 #ifdef __serenity__
     if (pledge("stdio rpath wpath cpath proc exec tty accept sigaction unix fattr", nullptr) < 0) {
@@ -179,35 +81,78 @@ int main(int argc, char** argv)
     }
 #endif
 
-    editor = Line::Editor::construct();
-
-    auto shell = Shell::construct();
-    s_shell = shell.ptr();
-
     editor->initialize();
     shell->termios = editor->termios();
     shell->default_termios = editor->default_termios();
 
     editor->on_display_refresh = [&](auto& editor) {
         editor.strip_styles();
+        if (shell->should_format_live()) {
+            auto line = editor.line();
+            ssize_t cursor = editor.cursor();
+            editor.clear_line();
+            editor.insert(shell->format(line, cursor));
+            if (cursor >= 0)
+                editor.set_cursor(cursor);
+        }
         shell->highlight(editor);
     };
-    editor->on_tab_complete = [&](const Line::Editor& editor) {
-        return shell->complete(editor);
+    editor->on_tab_complete = [&](const Line::Editor&) {
+        return shell->complete();
     };
 
     const char* command_to_run = nullptr;
     const char* file_to_read_from = nullptr;
     Vector<const char*> script_args;
     bool skip_rc_files = false;
+    const char* format = nullptr;
+    bool should_format_live = false;
 
     Core::ArgsParser parser;
     parser.add_option(command_to_run, "String to read commands from", "command-string", 'c', "command-string");
     parser.add_option(skip_rc_files, "Skip running shellrc files", "skip-shellrc", 0);
+    parser.add_option(format, "Format the given file into stdout and exit", "format", 0, "file");
+    parser.add_option(should_format_live, "Enable live formatting", "live-formatting", 'f');
     parser.add_positional_argument(file_to_read_from, "File to read commands from", "file", Core::ArgsParser::Required::No);
     parser.add_positional_argument(script_args, "Extra argumets to pass to the script (via $* and co)", "argument", Core::ArgsParser::Required::No);
 
     parser.parse(argc, argv);
+
+    shell->set_live_formatting(should_format_live);
+
+    if (format) {
+        auto file = Core::File::open(format, Core::IODevice::ReadOnly);
+        if (file.is_error()) {
+            fprintf(stderr, "Error: %s", file.error().characters());
+            return 1;
+        }
+
+        ssize_t cursor = -1;
+        puts(shell->format(file.value()->read_all(), cursor).characters());
+        return 0;
+    }
+
+    auto pid = getpid();
+    if (auto sid = getsid(pid); sid == 0) {
+        if (setsid() < 0) {
+            perror("setsid");
+            // Let's just hope that it's ok.
+        }
+    } else if (sid != pid) {
+        if (getpgid(pid) != pid) {
+            dbgln("We were already in a session with sid={} (we are {}), let's do some gymnastics", sid, pid);
+            if (setpgid(pid, sid) < 0) {
+                auto strerr = strerror(errno);
+                dbgln("couldn't setpgid: {}", strerr);
+            }
+            if (setsid() < 0) {
+                auto strerr = strerror(errno);
+                dbgln("couldn't setsid: {}", strerr);
+            }
+        }
+    }
+
+    shell->current_script = argv[0];
 
     if (!skip_rc_files) {
         auto run_rc_file = [&](auto& name) {
@@ -218,15 +163,15 @@ int main(int argc, char** argv)
                 shell->run_file(file_path, false);
             }
         };
-        run_rc_file(Shell::global_init_file_path);
-        run_rc_file(Shell::local_init_file_path);
+        run_rc_file(Shell::Shell::global_init_file_path);
+        run_rc_file(Shell::Shell::local_init_file_path);
     }
 
     {
         Vector<String> args;
         for (auto* arg : script_args)
             args.empend(arg);
-        shell->set_local_variable("ARGV", adopt(*new AST::ListValue(move(args))));
+        shell->set_local_variable("ARGV", adopt(*new Shell::AST::ListValue(move(args))));
     }
 
     if (command_to_run) {
@@ -243,7 +188,7 @@ int main(int argc, char** argv)
 
     shell->add_child(*editor);
 
-    Core::EventLoop::current().post_event(*shell, make<Core::CustomEvent>(Shell::ShellEventType::ReadLine));
+    Core::EventLoop::current().post_event(*shell, make<Core::CustomEvent>(Shell::Shell::ShellEventType::ReadLine));
 
     return loop.exec();
 }

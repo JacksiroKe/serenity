@@ -26,9 +26,9 @@
 
 #include <Kernel/Arch/i386/CPU.h>
 #include <Kernel/CMOS.h>
+#include <Kernel/IO.h>
 #include <Kernel/Time/RTC.h>
 #include <Kernel/Time/TimeManagement.h>
-#include <Kernel/IO.h>
 
 namespace Kernel {
 #define IRQ_TIMER 8
@@ -65,7 +65,7 @@ void RealTimeClock::reset_to_default_ticks_per_second()
     ASSERT(success);
 }
 
-// FIXME: This is a quick & dirty log base 2 with a paramater. Please provide something better in the future.
+// FIXME: This is a quick & dirty log base 2 with a parameter. Please provide something better in the future.
 static int quick_log2(size_t number)
 {
     int count = 0;

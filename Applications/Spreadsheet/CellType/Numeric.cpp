@@ -27,6 +27,7 @@
 #include "Numeric.h"
 #include "../Cell.h"
 #include "../Spreadsheet.h"
+#include "Format.h"
 
 namespace Spreadsheet {
 
@@ -43,10 +44,10 @@ String NumericCell::display(Cell& cell, const CellTypeMetadata& metadata) const
 {
     auto value = js_value(cell, metadata);
     String string;
-    if (metadata.format.is_null())
+    if (metadata.format.is_empty())
         string = value.to_string_without_side_effects();
     else
-        string = String::format(metadata.format.characters(), value.to_double(cell.sheet->interpreter())); // FIXME: Somehow make this format less dependent on 'double'.
+        string = format_double(metadata.format.characters(), value.to_double(cell.sheet->global_object()));
 
     if (metadata.length >= 0)
         return string.substring(0, metadata.length);
@@ -56,7 +57,7 @@ String NumericCell::display(Cell& cell, const CellTypeMetadata& metadata) const
 
 JS::Value NumericCell::js_value(Cell& cell, const CellTypeMetadata&) const
 {
-    return cell.js_data().to_number(cell.sheet->interpreter());
+    return cell.js_data().to_number(cell.sheet->global_object());
 }
 
 }

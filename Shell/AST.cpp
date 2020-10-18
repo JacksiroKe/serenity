@@ -37,7 +37,7 @@
 
 //#define EXECUTE_DEBUG
 
-namespace AST {
+namespace Shell::AST {
 
 template<typename T, typename... Args>
 static inline NonnullRefPtr<T> create(Args... args)
@@ -83,7 +83,7 @@ static inline Vector<Command> join_commands(Vector<Command> left, Vector<Command
     return commands;
 }
 
-void Node::for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(RefPtr<Value>)> callback)
+void Node::for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback)
 {
     auto value = run(shell)->resolve_without_cast(shell);
     if (value->is_job()) {
@@ -121,7 +121,15 @@ Vector<Command> Node::to_lazy_evaluated_commands(RefPtr<Shell> shell)
 
 void Node::dump(int level) const
 {
-    print_indented(String::format("%s at %d:%d", class_name().characters(), m_position.start_offset, m_position.end_offset), level);
+    print_indented(String::format("%s at %d:%d (from %d.%d to %d.%d)",
+                       class_name().characters(),
+                       m_position.start_offset,
+                       m_position.end_offset,
+                       m_position.start_line.line_number,
+                       m_position.start_line.line_column,
+                       m_position.end_line.line_number,
+                       m_position.end_line.line_column),
+        level);
 }
 
 Node::Node(Position position)
@@ -219,16 +227,18 @@ HitTestResult And::hit_test_position(size_t offset)
             result.closest_command_node = m_right;
         return result;
     }
+
     result = m_right->hit_test_position(offset);
     if (!result.closest_command_node)
         result.closest_command_node = m_right;
     return result;
 }
 
-And::And(Position position, RefPtr<Node> left, RefPtr<Node> right)
+And::And(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right, Position and_position)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
+    , m_and_position(and_position)
 {
     if (m_left->is_syntax_error())
         set_is_syntax_error(m_left->syntax_error_node());
@@ -324,7 +334,7 @@ RefPtr<Node> ListConcatenate::leftmost_trivial_literal() const
     return m_list.first()->leftmost_trivial_literal();
 }
 
-ListConcatenate::ListConcatenate(Position position, Vector<RefPtr<Node>> list)
+ListConcatenate::ListConcatenate(Position position, Vector<NonnullRefPtr<Node>> list)
     : Node(move(position))
     , m_list(move(list))
 {
@@ -368,7 +378,7 @@ HitTestResult Background::hit_test_position(size_t offset)
     return m_command->hit_test_position(offset);
 }
 
-Background::Background(Position position, RefPtr<Node> command)
+Background::Background(Position position, NonnullRefPtr<Node> command)
     : Node(move(position))
     , m_command(move(command))
 {
@@ -491,7 +501,7 @@ RefPtr<Node> CastToCommand::leftmost_trivial_literal() const
     return m_inner->leftmost_trivial_literal();
 }
 
-CastToCommand::CastToCommand(Position position, RefPtr<Node> inner)
+CastToCommand::CastToCommand(Position position, NonnullRefPtr<Node> inner)
     : Node(move(position))
     , m_inner(move(inner))
 {
@@ -723,7 +733,7 @@ HitTestResult DynamicEvaluate::hit_test_position(size_t offset)
     return m_inner->hit_test_position(offset);
 }
 
-DynamicEvaluate::DynamicEvaluate(Position position, RefPtr<Node> inner)
+DynamicEvaluate::DynamicEvaluate(Position position, NonnullRefPtr<Node> inner)
     : Node(move(position))
     , m_inner(move(inner))
 {
@@ -738,13 +748,13 @@ DynamicEvaluate::~DynamicEvaluate()
 void Fd2FdRedirection::dump(int level) const
 {
     Node::dump(level);
-    print_indented(String::format("%d -> %d", source_fd, dest_fd), level);
+    print_indented(String::format("%d -> %d", m_source_fd, m_dest_fd), level);
 }
 
 RefPtr<Value> Fd2FdRedirection::run(RefPtr<Shell>)
 {
     Command command;
-    command.redirections.append(FdRedirection::create(source_fd, dest_fd, Rewiring::Close::None));
+    command.redirections.append(FdRedirection::create(m_source_fd, m_dest_fd, Rewiring::Close::None));
     return create<CommandValue>(move(command));
 }
 
@@ -755,12 +765,103 @@ void Fd2FdRedirection::highlight_in_editor(Line::Editor& editor, Shell&, Highlig
 
 Fd2FdRedirection::Fd2FdRedirection(Position position, int src, int dst)
     : Node(move(position))
-    , source_fd(src)
-    , dest_fd(dst)
+    , m_source_fd(src)
+    , m_dest_fd(dst)
 {
 }
 
 Fd2FdRedirection::~Fd2FdRedirection()
+{
+}
+
+void FunctionDeclaration::dump(int level) const
+{
+    Node::dump(level);
+    print_indented(String::format("(name: %s)\n", m_name.name.characters()), level + 1);
+    print_indented("(argument namess)", level + 1);
+    for (auto& arg : m_arguments)
+        print_indented(String::format("(name: %s)\n", arg.name.characters()), level + 2);
+
+    print_indented("(body)", level + 1);
+    if (m_block)
+        m_block->dump(level + 2);
+    else
+        print_indented("(null)", level + 2);
+}
+
+RefPtr<Value> FunctionDeclaration::run(RefPtr<Shell> shell)
+{
+    Vector<String> args;
+    for (auto& arg : m_arguments)
+        args.append(arg.name);
+
+    shell->define_function(m_name.name, move(args), m_block);
+
+    return create<ListValue>({});
+}
+
+void FunctionDeclaration::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMetadata metadata)
+{
+    editor.stylize({ m_name.position.start_offset, m_name.position.end_offset }, { Line::Style::Foreground(Line::Style::XtermColor::Blue) });
+
+    for (auto& arg : m_arguments)
+        editor.stylize({ arg.position.start_offset, arg.position.end_offset }, { Line::Style::Foreground(Line::Style::XtermColor::Blue), Line::Style::Italic });
+
+    metadata.is_first_in_list = true;
+    if (m_block)
+        m_block->highlight_in_editor(editor, shell, metadata);
+}
+
+HitTestResult FunctionDeclaration::hit_test_position(size_t offset)
+{
+    if (!position().contains(offset))
+        return {};
+
+    if (!m_block)
+        return {};
+
+    auto result = m_block->hit_test_position(offset);
+    if (result.matching_node && result.matching_node->is_simple_variable())
+        result.closest_node_with_semantic_meaning = this;
+    return result;
+}
+
+Vector<Line::CompletionSuggestion> FunctionDeclaration::complete_for_editor(Shell& shell, size_t offset, const HitTestResult& hit_test_result)
+{
+    auto matching_node = hit_test_result.matching_node;
+    if (!matching_node)
+        return {};
+
+    if (!matching_node->is_simple_variable())
+        return matching_node->complete_for_editor(shell, offset, hit_test_result);
+
+    auto corrected_offset = offset - matching_node->position().start_offset - 1; // Skip the first '$'
+    auto* node = static_cast<SimpleVariable*>(matching_node.ptr());
+
+    auto name = node->name().substring_view(0, corrected_offset);
+
+    Vector<Line::CompletionSuggestion> results;
+    for (auto& arg : m_arguments) {
+        if (arg.name.starts_with(name))
+            results.append(arg.name);
+    }
+
+    results.append(matching_node->complete_for_editor(shell, offset, hit_test_result));
+
+    return results;
+}
+
+FunctionDeclaration::FunctionDeclaration(Position position, NameWithPosition name, Vector<NameWithPosition> arguments, RefPtr<AST::Node> body)
+    : Node(move(position))
+    , m_name(move(name))
+    , m_arguments(arguments)
+    , m_block(move(body))
+{
+    if (m_block && m_block->is_syntax_error())
+        set_is_syntax_error(m_block->syntax_error_node());
+}
+
+FunctionDeclaration::~FunctionDeclaration()
 {
 }
 
@@ -821,7 +922,7 @@ void ForLoop::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightM
 {
     editor.stylize({ m_position.start_offset, m_position.start_offset + 3 }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow) });
     if (m_in_kw_position.has_value())
-        editor.stylize({ m_in_kw_position.value(), m_in_kw_position.value() + 2 }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow) });
+        editor.stylize({ m_in_kw_position.value().start_offset, m_in_kw_position.value().end_offset }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow) });
 
     metadata.is_first_in_list = false;
     m_iterated_expression->highlight_in_editor(editor, shell, metadata);
@@ -839,10 +940,13 @@ HitTestResult ForLoop::hit_test_position(size_t offset)
     if (auto result = m_iterated_expression->hit_test_position(offset); result.matching_node)
         return result;
 
+    if (!m_block)
+        return {};
+
     return m_block->hit_test_position(offset);
 }
 
-ForLoop::ForLoop(Position position, String variable_name, RefPtr<AST::Node> iterated_expr, RefPtr<AST::Node> block, Optional<size_t> in_kw_position)
+ForLoop::ForLoop(Position position, String variable_name, NonnullRefPtr<AST::Node> iterated_expr, RefPtr<AST::Node> block, Optional<Position> in_kw_position)
     : Node(move(position))
     , m_variable_name(move(variable_name))
     , m_iterated_expression(move(iterated_expr))
@@ -896,7 +1000,7 @@ void Execute::dump(int level) const
     m_command->dump(level + 1);
 }
 
-void Execute::for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(RefPtr<Value>)> callback)
+void Execute::for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(NonnullRefPtr<Value>)> callback)
 {
     if (m_command->would_execute())
         return m_command->for_each_entry(shell, move(callback));
@@ -1019,7 +1123,7 @@ void Execute::for_each_entry(RefPtr<Shell> shell, Function<IterationDecision(Ref
             } while (action == Continue);
 
             if (!stream.eof()) {
-                auto entry = ByteBuffer::create_uninitialized(stream.remaining());
+                auto entry = ByteBuffer::create_uninitialized(stream.size());
                 auto rc = stream.read_or_error(entry);
                 ASSERT(rc);
                 callback(create<StringValue>(String::copy(entry)));
@@ -1088,7 +1192,7 @@ Vector<Line::CompletionSuggestion> Execute::complete_for_editor(Shell& shell, si
     return shell.complete_program_name(node->text(), corrected_offset);
 }
 
-Execute::Execute(Position position, RefPtr<Node> command, bool capture_stdout)
+Execute::Execute(Position position, NonnullRefPtr<Node> command, bool capture_stdout)
     : Node(move(position))
     , m_command(move(command))
     , m_capture_stdout(capture_stdout)
@@ -1121,16 +1225,16 @@ void IfCond::dump(int level) const
 RefPtr<Value> IfCond::run(RefPtr<Shell> shell)
 {
     auto cond = m_condition->run(shell)->resolve_without_cast(shell);
-    ASSERT(cond->is_job());
+    // The condition could be a builtin, in which case it has already run and exited.
+    if (cond && cond->is_job()) {
+        auto cond_job_value = static_cast<const JobValue*>(cond.ptr());
+        auto cond_job = cond_job_value->job();
 
-    auto cond_job_value = static_cast<const JobValue*>(cond.ptr());
-    auto cond_job = cond_job_value->job();
+        shell->block_on_job(cond_job);
 
-    shell->block_on_job(cond_job);
-
-    if (cond_job->signaled())
-        return create<ListValue>({}); // Exit early.
-
+        if (cond_job->signaled())
+            return create<ListValue>({}); // Exit early.
+    }
     if (shell->last_return_code == 0) {
         if (m_true_branch)
             return m_true_branch->run(shell);
@@ -1178,7 +1282,7 @@ HitTestResult IfCond::hit_test_position(size_t offset)
     return {};
 }
 
-IfCond::IfCond(Position position, Optional<Position> else_position, RefPtr<Node> condition, RefPtr<Node> true_branch, RefPtr<Node> false_branch)
+IfCond::IfCond(Position position, Optional<Position> else_position, NonnullRefPtr<Node> condition, RefPtr<Node> true_branch, RefPtr<Node> false_branch)
     : Node(move(position))
     , m_condition(move(condition))
     , m_true_branch(move(true_branch))
@@ -1193,10 +1297,16 @@ IfCond::IfCond(Position position, Optional<Position> else_position, RefPtr<Node>
         set_is_syntax_error(m_false_branch->syntax_error_node());
 
     m_condition = create<AST::Execute>(m_condition->position(), m_condition);
-    if (m_true_branch)
-        m_true_branch = create<AST::Execute>(m_true_branch->position(), m_true_branch);
-    if (m_false_branch)
-        m_false_branch = create<AST::Execute>(m_false_branch->position(), m_false_branch);
+
+    if (m_true_branch) {
+        auto true_branch = m_true_branch.release_nonnull();
+        m_true_branch = create<AST::Execute>(true_branch->position(), true_branch);
+    }
+
+    if (m_false_branch) {
+        auto false_branch = m_false_branch.release_nonnull();
+        m_false_branch = create<AST::Execute>(false_branch->position(), false_branch);
+    }
 }
 
 IfCond::~IfCond()
@@ -1234,6 +1344,7 @@ HitTestResult Join::hit_test_position(size_t offset)
     auto result = m_left->hit_test_position(offset);
     if (result.matching_node)
         return result;
+
     return m_right->hit_test_position(offset);
 }
 
@@ -1244,7 +1355,7 @@ RefPtr<Node> Join::leftmost_trivial_literal() const
     return m_right->leftmost_trivial_literal();
 }
 
-Join::Join(Position position, RefPtr<Node> left, RefPtr<Node> right)
+Join::Join(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
@@ -1256,6 +1367,148 @@ Join::Join(Position position, RefPtr<Node> left, RefPtr<Node> right)
 }
 
 Join::~Join()
+{
+}
+
+void MatchExpr::dump(int level) const
+{
+    Node::dump(level);
+    print_indented(String::format("(expression)", m_expr_name.characters()), level + 1);
+    m_matched_expr->dump(level + 2);
+    print_indented(String::format("(named: %s)", m_expr_name.characters()), level + 1);
+    print_indented("(entries)", level + 1);
+    for (auto& entry : m_entries) {
+        print_indented("(match)", level + 2);
+        for (auto& node : entry.options)
+            node.dump(level + 3);
+        print_indented("(execute)", level + 2);
+        if (entry.body)
+            entry.body->dump(level + 3);
+        else
+            print_indented("(nothing)", level + 3);
+    }
+}
+
+RefPtr<Value> MatchExpr::run(RefPtr<Shell> shell)
+{
+    auto value = m_matched_expr->run(shell)->resolve_without_cast(shell);
+    auto list = value->resolve_as_list(shell);
+
+    auto list_matches = [&](auto&& pattern) {
+        if (pattern.size() != list.size())
+            return false;
+
+        for (size_t i = 0; i < pattern.size(); ++i) {
+            if (!list[i].matches(pattern[i]))
+                return false;
+        }
+
+        return true;
+    };
+
+    auto resolve_pattern = [&](auto& option) {
+        Vector<String> pattern;
+        if (option.is_glob()) {
+            pattern.append(static_cast<const Glob*>(&option)->text());
+        } else if (option.is_bareword()) {
+            pattern.append(static_cast<const BarewordLiteral*>(&option)->text());
+        } else if (option.is_list()) {
+            auto list = option.run(shell);
+            option.for_each_entry(shell, [&](auto&& value) {
+                pattern.append(value->resolve_as_list(nullptr)); // Note: 'nullptr' incurs special behaviour,
+                                                                 //       asking the node for a 'raw' value.
+                return IterationDecision::Continue;
+            });
+        }
+
+        return pattern;
+    };
+
+    auto frame = shell->push_frame();
+    if (!m_expr_name.is_empty())
+        shell->set_local_variable(m_expr_name, value);
+
+    for (auto& entry : m_entries) {
+        for (auto& option : entry.options) {
+            if (list_matches(resolve_pattern(option))) {
+                if (entry.body)
+                    return entry.body->run(shell);
+                else
+                    return create<AST::ListValue>({});
+            }
+        }
+    }
+
+    // FIXME: Somehow raise an error in the shell.
+    dbg() << "Non-exhaustive match rules!";
+    return create<AST::ListValue>({});
+}
+
+void MatchExpr::highlight_in_editor(Line::Editor& editor, Shell& shell, HighlightMetadata metadata)
+{
+    editor.stylize({ m_position.start_offset, m_position.start_offset + 5 }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow) });
+    if (m_as_position.has_value())
+        editor.stylize({ m_as_position.value().start_offset, m_as_position.value().end_offset }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow) });
+
+    metadata.is_first_in_list = false;
+    m_matched_expr->highlight_in_editor(editor, shell, metadata);
+
+    for (auto& entry : m_entries) {
+        metadata.is_first_in_list = false;
+        for (auto& option : entry.options)
+            option.highlight_in_editor(editor, shell, metadata);
+
+        metadata.is_first_in_list = true;
+        if (entry.body)
+            entry.body->highlight_in_editor(editor, shell, metadata);
+
+        for (auto& position : entry.pipe_positions)
+            editor.stylize({ position.start_offset, position.end_offset }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow) });
+    }
+}
+
+HitTestResult MatchExpr::hit_test_position(size_t offset)
+{
+    if (!position().contains(offset))
+        return {};
+
+    auto result = m_matched_expr->hit_test_position(offset);
+    if (result.matching_node)
+        return result;
+
+    for (auto& entry : m_entries) {
+        if (!entry.body)
+            continue;
+        auto result = entry.body->hit_test_position(offset);
+        if (result.matching_node)
+            return result;
+    }
+
+    return {};
+}
+
+MatchExpr::MatchExpr(Position position, NonnullRefPtr<Node> expr, String name, Optional<Position> as_position, Vector<MatchEntry> entries)
+    : Node(move(position))
+    , m_matched_expr(move(expr))
+    , m_expr_name(move(name))
+    , m_as_position(move(as_position))
+    , m_entries(move(entries))
+{
+    if (m_matched_expr->is_syntax_error()) {
+        set_is_syntax_error(m_matched_expr->syntax_error_node());
+    } else {
+        for (auto& entry : m_entries) {
+            if (!entry.body)
+                continue;
+            if (entry.body->is_syntax_error()) {
+                set_is_syntax_error(entry.body->syntax_error_node());
+                break;
+            }
+        }
+    }
+}
+
+MatchExpr::~MatchExpr()
 {
 }
 
@@ -1290,16 +1543,18 @@ HitTestResult Or::hit_test_position(size_t offset)
             result.closest_command_node = m_right;
         return result;
     }
+
     result = m_right->hit_test_position(offset);
     if (!result.closest_command_node)
         result.closest_command_node = m_right;
     return result;
 }
 
-Or::Or(Position position, RefPtr<Node> left, RefPtr<Node> right)
+Or::Or(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right, Position or_position)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
+    , m_or_position(or_position)
 {
     if (m_left->is_syntax_error())
         set_is_syntax_error(m_left->syntax_error_node());
@@ -1362,12 +1617,19 @@ HitTestResult Pipe::hit_test_position(size_t offset)
         return {};
 
     auto result = m_left->hit_test_position(offset);
-    if (result.matching_node)
+    if (result.matching_node) {
+        if (!result.closest_command_node)
+            result.closest_command_node = m_right;
         return result;
-    return m_right->hit_test_position(offset);
+    }
+
+    result = m_right->hit_test_position(offset);
+    if (!result.closest_command_node)
+        result.closest_command_node = m_right;
+    return result;
 }
 
-Pipe::Pipe(Position position, RefPtr<Node> left, RefPtr<Node> right)
+Pipe::Pipe(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
@@ -1382,7 +1644,7 @@ Pipe::~Pipe()
 {
 }
 
-PathRedirectionNode::PathRedirectionNode(Position position, int fd, RefPtr<Node> path)
+PathRedirectionNode::PathRedirectionNode(Position position, int fd, NonnullRefPtr<Node> path)
     : Node(move(position))
     , m_fd(fd)
     , m_path(move(path))
@@ -1456,7 +1718,7 @@ RefPtr<Value> ReadRedirection::run(RefPtr<Shell> shell)
     return create<CommandValue>(move(command));
 }
 
-ReadRedirection::ReadRedirection(Position position, int fd, RefPtr<Node> path)
+ReadRedirection::ReadRedirection(Position position, int fd, NonnullRefPtr<Node> path)
     : PathRedirectionNode(move(position), fd, move(path))
 {
 }
@@ -1483,7 +1745,7 @@ RefPtr<Value> ReadWriteRedirection::run(RefPtr<Shell> shell)
     return create<CommandValue>(move(command));
 }
 
-ReadWriteRedirection::ReadWriteRedirection(Position position, int fd, RefPtr<Node> path)
+ReadWriteRedirection::ReadWriteRedirection(Position position, int fd, NonnullRefPtr<Node> path)
     : PathRedirectionNode(move(position), fd, move(path))
 {
 }
@@ -1545,15 +1807,23 @@ HitTestResult Sequence::hit_test_position(size_t offset)
         return {};
 
     auto result = m_left->hit_test_position(offset);
-    if (result.matching_node)
+    if (result.matching_node) {
+        if (!result.closest_command_node)
+            result.closest_command_node = m_right;
         return result;
-    return m_right->hit_test_position(offset);
+    }
+
+    result = m_right->hit_test_position(offset);
+    if (!result.closest_command_node)
+        result.closest_command_node = m_right;
+    return result;
 }
 
-Sequence::Sequence(Position position, RefPtr<Node> left, RefPtr<Node> right)
+Sequence::Sequence(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right, Position separator_position)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
+    , m_separator_position(separator_position)
 {
     if (m_left->is_syntax_error())
         set_is_syntax_error(m_left->syntax_error_node());
@@ -1818,7 +2088,7 @@ HitTestResult Juxtaposition::hit_test_position(size_t offset)
     return result;
 }
 
-Juxtaposition::Juxtaposition(Position position, RefPtr<Node> left, RefPtr<Node> right)
+Juxtaposition::Juxtaposition(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
@@ -1898,7 +2168,7 @@ HitTestResult StringPartCompose::hit_test_position(size_t offset)
     return m_right->hit_test_position(offset);
 }
 
-StringPartCompose::StringPartCompose(Position position, RefPtr<Node> left, RefPtr<Node> right)
+StringPartCompose::StringPartCompose(Position position, NonnullRefPtr<Node> left, NonnullRefPtr<Node> right)
     : Node(move(position))
     , m_left(move(left))
     , m_right(move(right))
@@ -2021,7 +2291,7 @@ RefPtr<Value> WriteAppendRedirection::run(RefPtr<Shell> shell)
     return create<CommandValue>(move(command));
 }
 
-WriteAppendRedirection::WriteAppendRedirection(Position position, int fd, RefPtr<Node> path)
+WriteAppendRedirection::WriteAppendRedirection(Position position, int fd, NonnullRefPtr<Node> path)
     : PathRedirectionNode(move(position), fd, move(path))
 {
 }
@@ -2048,7 +2318,7 @@ RefPtr<Value> WriteRedirection::run(RefPtr<Shell> shell)
     return create<CommandValue>(move(command));
 }
 
-WriteRedirection::WriteRedirection(Position position, int fd, RefPtr<Node> path)
+WriteRedirection::WriteRedirection(Position position, int fd, NonnullRefPtr<Node> path)
     : PathRedirectionNode(move(position), fd, move(path))
 {
 }
@@ -2228,6 +2498,9 @@ GlobValue::~GlobValue()
 }
 Vector<String> GlobValue::resolve_as_list(RefPtr<Shell> shell)
 {
+    if (!shell)
+        return { m_glob };
+
     return shell->expand_globs(m_glob, shell->cwd);
 }
 
@@ -2236,6 +2509,9 @@ SimpleVariableValue::~SimpleVariableValue()
 }
 Vector<String> SimpleVariableValue::resolve_as_list(RefPtr<Shell> shell)
 {
+    if (!shell)
+        return {};
+
     if (auto value = resolve_without_cast(shell); value != this)
         return value->resolve_as_list(shell);
 
@@ -2253,6 +2529,8 @@ Vector<String> SimpleVariableValue::resolve_as_list(RefPtr<Shell> shell)
 
 NonnullRefPtr<Value> SimpleVariableValue::resolve_without_cast(RefPtr<Shell> shell)
 {
+    ASSERT(shell);
+
     if (auto value = shell->lookup_local_variable(m_name))
         return value.release_nonnull();
     return *this;
@@ -2264,6 +2542,9 @@ SpecialVariableValue::~SpecialVariableValue()
 
 Vector<String> SpecialVariableValue::resolve_as_list(RefPtr<Shell> shell)
 {
+    if (!shell)
+        return {};
+
     switch (m_name) {
     case '?':
         return { String::number(shell->last_return_code) };
@@ -2295,6 +2576,10 @@ Vector<String> TildeValue::resolve_as_list(RefPtr<Shell> shell)
     StringBuilder builder;
     builder.append("~");
     builder.append(m_username);
+
+    if (!shell)
+        return { builder.to_string() };
+
     return { shell->expand_tilde(builder.to_string()) };
 }
 

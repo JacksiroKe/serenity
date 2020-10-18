@@ -177,8 +177,8 @@ void Cube::timer_event(Core::TimerEvent&)
     }
 
     if ((m_cycles % 50) == 0) {
-        dbgprintf("%d total cycles. finished 50 in %d ms, avg %d ms\n", m_cycles, m_accumulated_time, m_accumulated_time / 50);
-        m_stats->set_text(String::format("%d ms", m_accumulated_time / 50));
+        dbgln("{} total cycles. finished 50 in {} ms, avg {} ms", m_cycles, m_accumulated_time, m_accumulated_time / 50);
+        m_stats->set_text(String::formatted("{} ms", m_accumulated_time / 50));
         m_accumulated_time = 0;
     }
 
@@ -203,7 +203,6 @@ int main(int argc, char** argv)
     auto& time = cube.add<GUI::Label>();
     time.set_relative_rect({ 0, 4, 40, 10 });
     time.move_by({ window->width() - time.width(), 0 });
-    time.set_foreground_color(Color::from_rgb(0x222222));
     cube.set_stat_label(time);
 
     window->show();

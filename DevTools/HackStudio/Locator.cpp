@@ -175,13 +175,13 @@ void Locator::update_suggestions()
 {
     auto typed_text = m_textbox->text();
     Vector<String> suggestions;
-    g_project->for_each_text_file([&](auto& file) {
+    project().for_each_text_file([&](auto& file) {
         if (file.name().contains(typed_text))
             suggestions.append(file.name());
     });
-    dbg() << "I have " << suggestions.size() << " suggestion(s):";
+    dbgln("I have {} suggestion(s):", suggestions.size());
     for (auto& s : suggestions) {
-        dbg() << "    " << s;
+        dbgln("    {}", s);
     }
 
     bool has_suggestions = !suggestions.is_empty();
@@ -194,7 +194,7 @@ void Locator::update_suggestions()
         m_suggestion_view->selection().set(m_suggestion_view->model()->index(0));
 
     m_popup_window->move_to(screen_relative_rect().top_left().translated(0, -m_popup_window->height()));
-    dbg() << "Popup rect: " << m_popup_window->rect();
+    dbgln("Popup rect: {}", m_popup_window->rect());
     m_popup_window->show();
 }
 

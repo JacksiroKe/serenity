@@ -39,6 +39,7 @@
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -82,6 +83,10 @@ bool FileSystemModel::Node::fetch_data(const String& full_path, bool is_root)
             perror("readlink");
     }
 
+    if (S_ISDIR(mode)) {
+        is_accessible_directory = access(full_path.characters(), R_OK | X_OK) == 0;
+    }
+
     return true;
 }
 
@@ -89,7 +94,18 @@ void FileSystemModel::Node::traverse_if_needed()
 {
     if (!is_directory() || has_traversed)
         return;
+
     has_traversed = true;
+
+    if (m_parent_of_root) {
+        auto root = adopt_own(*new Node(m_model));
+        root->fetch_data("/", true);
+        root->name = "/";
+        root->parent = this;
+        children.append(move(root));
+        return;
+    }
+
     total_size = 0;
 
     auto full_path = this->full_path();
@@ -149,7 +165,7 @@ void FileSystemModel::Node::reify_if_needed()
     traverse_if_needed();
     if (mode != 0)
         return;
-    fetch_data(full_path(), parent == nullptr);
+    fetch_data(full_path(), parent == nullptr || parent->m_parent_of_root);
 }
 
 String FileSystemModel::Node::full_path() const
@@ -172,9 +188,9 @@ String FileSystemModel::Node::full_path() const
 ModelIndex FileSystemModel::index(const StringView& path, int column) const
 {
     LexicalPath lexical_path(path);
-    const Node* node = m_root;
+    const Node* node = m_root->m_parent_of_root ? &m_root->children.first() : m_root;
     if (lexical_path.string() == "/")
-        return m_root->index(column);
+        return node->index(column);
     for (size_t i = 0; i < lexical_path.parts().size(); ++i) {
         auto& part = lexical_path.parts()[i];
         bool found = false;
@@ -290,7 +306,10 @@ void FileSystemModel::update_node_on_selection(const ModelIndex& index, const bo
 
 void FileSystemModel::set_root_path(const StringView& root_path)
 {
-    m_root_path = LexicalPath::canonicalized_path(root_path);
+    if (root_path.is_null())
+        m_root_path = {};
+    else
+        m_root_path = LexicalPath::canonicalized_path(root_path);
     update();
 
     if (m_root->has_error()) {
@@ -304,6 +323,10 @@ void FileSystemModel::set_root_path(const StringView& root_path)
 void FileSystemModel::update()
 {
     m_root = adopt_own(*new Node(*this));
+
+    if (m_root_path.is_null())
+        m_root->m_parent_of_root = true;
+
     m_root->reify_if_needed();
 
     did_update();
@@ -445,6 +468,9 @@ Variant FileSystemModel::data(const ModelIndex& index, ModelRole role) const
 
 Icon FileSystemModel::icon_for(const Node& node) const
 {
+    if (node.full_path() == "/")
+        return FileIconProvider::icon_for_path("/");
+
     if (Gfx::Bitmap::is_path_a_supported_image_format(node.name.to_lowercase())) {
         if (!node.thumbnail) {
             if (!const_cast<FileSystemModel*>(this)->fetch_thumbnail_for(node))
@@ -459,11 +485,11 @@ Icon FileSystemModel::icon_for(const Node& node) const
                 return FileIconProvider::home_directory_open_icon();
             return FileIconProvider::home_directory_icon();
         }
-        if (node.is_selected())
+        if (node.is_selected() && node.is_accessible_directory)
             return FileIconProvider::directory_open_icon();
     }
 
-    return FileIconProvider::icon_for_path(node.name, node.mode);
+    return FileIconProvider::icon_for_path(node.full_path(), node.mode);
 }
 
 static HashMap<String, RefPtr<Gfx::Bitmap>> s_thumbnail_cache;
@@ -579,6 +605,26 @@ void FileSystemModel::set_should_show_dotfiles(bool show)
         return;
     m_should_show_dotfiles = show;
     update();
+}
+
+bool FileSystemModel::is_editable(const ModelIndex& index) const
+{
+    if (!index.is_valid())
+        return false;
+    return index.column() == Column::Name;
+}
+
+void FileSystemModel::set_data(const ModelIndex& index, const Variant& data)
+{
+    ASSERT(is_editable(index));
+    Node& node = const_cast<Node&>(this->node(index));
+    auto dirname = LexicalPath(node.full_path()).dirname();
+    auto new_full_path = String::formatted("{}/{}", dirname, data.to_string());
+    int rc = rename(node.full_path().characters(), new_full_path.characters());
+    if (rc < 0) {
+        if (on_error)
+            on_error(errno, strerror(errno));
+    }
 }
 
 }

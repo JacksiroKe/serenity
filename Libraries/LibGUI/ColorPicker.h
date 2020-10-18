@@ -32,6 +32,7 @@
 namespace GUI {
 
 class ColorButton;
+class ColorPreview;
 class CustomColorWidget;
 
 class ColorPicker final : public Dialog {
@@ -41,7 +42,7 @@ public:
     virtual ~ColorPicker() override;
 
     bool color_has_alpha_channel() const { return m_color_has_alpha_channel; }
-    void set_color_has_alpha_channel(bool has_alpha) { m_color_has_alpha_channel = has_alpha; }
+    void set_color_has_alpha_channel(bool);
     Color color() const { return m_color; }
 
 private:
@@ -58,7 +59,7 @@ private:
 
     Vector<ColorButton*> m_color_widgets;
     RefPtr<CustomColorWidget> m_custom_color;
-    RefPtr<Widget> m_preview_widget;
+    RefPtr<ColorPreview> m_preview_widget;
     RefPtr<TextBox> m_html_text;
     RefPtr<SpinBox> m_red_spinbox;
     RefPtr<SpinBox> m_green_spinbox;

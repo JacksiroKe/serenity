@@ -52,6 +52,7 @@ public:
         Set,
         Shift,
         Ctrl,
+        ClearIfNotSelected
     };
 
     virtual void move_cursor(CursorMovement, SelectionUpdate) { }
@@ -129,6 +130,7 @@ protected:
     virtual void context_menu_event(ContextMenuEvent&) override;
     virtual void drop_event(DropEvent&) override;
     virtual void leave_event(Core::Event&) override;
+    virtual void hide_event(HideEvent&) override;
 
     virtual void clear_selection();
     virtual void set_selection(const ModelIndex&);

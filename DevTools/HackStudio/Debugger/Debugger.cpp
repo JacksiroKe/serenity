@@ -58,8 +58,8 @@ Debugger::Debugger(
     , m_on_continue_callback(move(on_continue_callback))
     , m_on_exit_callback(move(on_exit_callback))
 {
-    pthread_mutex_init(&m_continue_mutex, nullptr);
-    pthread_cond_init(&m_continue_cond, nullptr);
+    pthread_mutex_init(&m_ui_action_mutex, nullptr);
+    pthread_cond_init(&m_ui_action_cond, nullptr);
 }
 
 void Debugger::on_breakpoint_change(const String& file, size_t line, BreakpointChange change_type)
@@ -78,9 +78,9 @@ void Debugger::on_breakpoint_change(const String& file, size_t line, BreakpointC
 
     auto address = session->debug_info().get_instruction_from_source(position.file_path, position.line_number);
     if (!address.has_value()) {
-        dbg() << "Warning: couldn't get instruction address from source";
+        dbgln("Warning: couldn't get instruction address from source");
         // TODO: Currently, the GUI will indicate that a breakpoint was inserted/removed at this line,
-        // regardless of whether we actually succeeded to insert it. (For example a breakpoint on a comment, or an include statemanet).
+        // regardless of whether we actually succeeded to insert it. (For example a breakpoint on a comment, or an include statement).
         // We should indicate failure via a return value from this function, and not update the breakpoint GUI if we fail.
         return;
     }
@@ -97,7 +97,7 @@ void Debugger::on_breakpoint_change(const String& file, size_t line, BreakpointC
 Debug::DebugInfo::SourcePosition Debugger::create_source_position(const String& file, size_t line)
 {
     if (!file.starts_with('/') && !file.starts_with("./"))
-        return { String::format("./%s", file.characters()), line + 1 };
+        return { String::formatted("./{}", file), line + 1 };
     return { file, line + 1 };
 }
 
@@ -113,13 +113,13 @@ void Debugger::start()
     ASSERT(!!m_debug_session);
 
     for (const auto& breakpoint : m_breakpoints) {
-        dbg() << "insertig breakpoint at: " << breakpoint.file_path << ":" << breakpoint.line_number;
+        dbgln("insertig breakpoint at: {}:{}", breakpoint.file_path, breakpoint.line_number);
         auto address = m_debug_session->debug_info().get_instruction_from_source(breakpoint.file_path, breakpoint.line_number);
         if (address.has_value()) {
             bool success = m_debug_session->insert_breakpoint(reinterpret_cast<void*>(address.value()));
             ASSERT(success);
         } else {
-            dbg() << "couldn't insert breakpoint";
+            dbgln("couldn't insert breakpoint");
         }
     }
 
@@ -130,9 +130,9 @@ int Debugger::debugger_loop()
 {
     ASSERT(m_debug_session);
 
-    m_debug_session->run([&](Debug::DebugSession::DebugBreakReason reason, Optional<PtraceRegisters> optional_regs) {
+    m_debug_session->run([this](Debug::DebugSession::DebugBreakReason reason, Optional<PtraceRegisters> optional_regs) {
         if (reason == Debug::DebugSession::DebugBreakReason::Exited) {
-            dbg() << "Program exited";
+            dbgln("Program exited");
             m_on_exit_callback();
             return Debug::DebugSession::DebugDecision::Detach;
         }
@@ -153,30 +153,38 @@ int Debugger::debugger_loop()
         auto control_passed_to_user = m_on_stopped_callback(regs);
 
         if (control_passed_to_user == HasControlPassedToUser::Yes) {
-            pthread_mutex_lock(&m_continue_mutex);
-            pthread_cond_wait(&m_continue_cond, &m_continue_mutex);
-            pthread_mutex_unlock(&m_continue_mutex);
+            pthread_mutex_lock(&m_ui_action_mutex);
+            pthread_cond_wait(&m_ui_action_cond, &m_ui_action_mutex);
+            pthread_mutex_unlock(&m_ui_action_mutex);
 
-            m_on_continue_callback();
+            if (m_requested_debugger_action != DebuggerAction::Exit)
+                m_on_continue_callback();
+
         } else {
-            m_continue_type = ContinueType::Continue;
+            m_requested_debugger_action = DebuggerAction::Continue;
         }
 
-        switch (m_continue_type) {
-        case ContinueType::Continue:
+        switch (m_requested_debugger_action) {
+        case DebuggerAction::Continue:
             m_state.set_normal();
             return Debug::DebugSession::DebugDecision::Continue;
-        case ContinueType::SourceSingleStep:
+        case DebuggerAction::SourceSingleStep:
             m_state.set_single_stepping(source_position.value());
             return Debug::DebugSession::DebugDecision::SingleStep;
-        case ContinueType::SourceStepOut:
+        case DebuggerAction::SourceStepOut:
             m_state.set_stepping_out();
             do_step_out(regs);
             return Debug::DebugSession::DebugDecision::Continue;
-        case ContinueType::SourceStepOver:
+        case DebuggerAction::SourceStepOver:
             m_state.set_stepping_over();
             do_step_over(regs);
             return Debug::DebugSession::DebugDecision::Continue;
+        case DebuggerAction::Exit:
+            // NOTE: Is detaching from the debuggee the best thing to do here?
+            // We could display a dialog in the UI, remind the user that there is
+            // a live debugged process, and ask whether they want to terminate/detach.
+            dbgln("Debugger exiting");
+            return Debug::DebugSession::DebugDecision::Detach;
         }
         ASSERT_NOT_REACHED();
     });
@@ -257,6 +265,14 @@ void Debugger::insert_temporary_breakpoint(FlatPtr address)
     bool success = m_debug_session->insert_breakpoint(reinterpret_cast<void*>(address));
     ASSERT(success);
     m_state.add_temporary_breakpoint(address);
+}
+
+void Debugger::set_requested_debugger_action(DebuggerAction action)
+{
+    pthread_mutex_lock(continue_mutex());
+    m_requested_debugger_action = action;
+    pthread_cond_signal(continue_cond());
+    pthread_mutex_unlock(continue_mutex());
 }
 
 }

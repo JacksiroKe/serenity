@@ -26,17 +26,20 @@
 
 #include <LibGUI/Button.h>
 #include <LibGUI/TextBox.h>
+#include <LibWeb/Bindings/WindowObject.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
+#include <LibWeb/DOM/Window.h>
 #include <LibWeb/Dump.h>
 #include <LibWeb/HTML/HTMLFormElement.h>
 #include <LibWeb/HTML/HTMLIFrameElement.h>
 #include <LibWeb/HTML/Parser/HTMLDocumentParser.h>
+#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Layout/LayoutFrame.h>
 #include <LibWeb/Layout/LayoutWidget.h>
 #include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Origin.h>
 #include <LibWeb/Page/Frame.h>
-#include <LibWeb/InProcessWebView.h>
 
 namespace Web::HTML {
 
@@ -57,8 +60,8 @@ RefPtr<LayoutNode> HTMLIFrameElement::create_layout_node(const CSS::StylePropert
 
 void HTMLIFrameElement::document_did_attach_to_frame(Frame& frame)
 {
-    ASSERT(!m_hosted_frame);
-    m_hosted_frame = Frame::create_subframe(*this, frame.main_frame());
+    ASSERT(!m_content_frame);
+    m_content_frame = Frame::create_subframe(*this, frame.main_frame());
     auto src = attribute(HTML::AttributeNames::src);
     if (src.is_null())
         return;
@@ -78,12 +81,29 @@ void HTMLIFrameElement::load_src(const String& value)
         return;
     }
 
-    m_hosted_frame->loader().load(url, FrameLoader::Type::IFrame);
+    m_content_frame->loader().load(url, FrameLoader::Type::IFrame);
+}
+
+Origin HTMLIFrameElement::content_origin() const
+{
+    if (!m_content_frame || !m_content_frame->document())
+        return {};
+    return m_content_frame->document()->origin();
+}
+
+bool HTMLIFrameElement::may_access_from_origin(const Origin& origin) const
+{
+    return origin.is_same(content_origin());
 }
 
 const DOM::Document* HTMLIFrameElement::content_document() const
 {
-    return m_hosted_frame ? m_hosted_frame->document() : nullptr;
+    return m_content_frame ? m_content_frame->document() : nullptr;
+}
+
+void HTMLIFrameElement::content_frame_did_load(Badge<FrameLoader>)
+{
+    dispatch_event(DOM::Event::create("load"));
 }
 
 }

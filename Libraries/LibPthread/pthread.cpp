@@ -83,8 +83,7 @@ static int create_thread(void* (*entry)(void*), void* argument, PthreadAttrImpl*
     return syscall(SC_create_thread, pthread_create_helper, thread_params);
 }
 
-[[noreturn]] 	
-static void exit_thread(void* code)
+[[noreturn]] static void exit_thread(void* code)
 {
     syscall(SC_exit_thread, code);
     ASSERT_NOT_REACHED();
@@ -383,7 +382,7 @@ int pthread_attr_getstack(const pthread_attr_t* attributes, void** p_stack_ptr, 
     if (!attributes_impl || !p_stack_ptr || !p_stack_size)
         return EINVAL;
 
-    *p_stack_ptr = attributes_impl->m_stack_location.ptr();
+    *p_stack_ptr = attributes_impl->m_stack_location;
     *p_stack_size = attributes_impl->m_stack_size;
 
     return 0;

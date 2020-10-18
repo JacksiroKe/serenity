@@ -104,7 +104,7 @@ inline T* InlineLinkedListNode<T>::next() const
 template<typename T>
 class InlineLinkedList {
 public:
-    InlineLinkedList() {}
+    InlineLinkedList() { }
 
     bool is_empty() const { return !m_head; }
     size_t size_slow() const;
@@ -217,6 +217,9 @@ inline void InlineLinkedList<T>::remove(T* node)
         ASSERT(node == m_tail);
         m_tail = node->prev();
     }
+
+    node->set_next(0);
+    node->set_prev(0);
 }
 
 template<typename T>

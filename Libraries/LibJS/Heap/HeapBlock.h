@@ -26,6 +26,7 @@
 
 #pragma once
 
+#include <AK/IntrusiveList.h>
 #include <AK/Types.h>
 #include <LibJS/Forward.h>
 #include <LibJS/Runtime/Cell.h>
@@ -33,6 +34,9 @@
 namespace JS {
 
 class HeapBlock {
+    AK_MAKE_NONCOPYABLE(HeapBlock);
+    AK_MAKE_NONMOVABLE(HeapBlock);
+
 public:
     static constexpr size_t block_size = 16 * KiB;
     static NonnullOwnPtr<HeapBlock> create_with_cell_size(Heap&, size_t);
@@ -41,8 +45,15 @@ public:
 
     size_t cell_size() const { return m_cell_size; }
     size_t cell_count() const { return (block_size - sizeof(HeapBlock)) / m_cell_size; }
+    bool is_full() const { return !m_freelist; }
 
-    Cell* allocate();
+    ALWAYS_INLINE Cell* allocate()
+    {
+        if (!m_freelist)
+            return nullptr;
+        return exchange(m_freelist, m_freelist->next);
+    }
+
     void deallocate(Cell*);
 
     template<typename Callback>
@@ -64,8 +75,12 @@ public:
         if (pointer < reinterpret_cast<FlatPtr>(m_storage))
             return nullptr;
         size_t cell_index = (pointer - reinterpret_cast<FlatPtr>(m_storage)) / m_cell_size;
+        if (cell_index >= cell_count())
+            return nullptr;
         return cell(cell_index);
     }
+
+    IntrusiveListNode m_list_node;
 
 private:
     HeapBlock(Heap&, size_t cell_size);
@@ -89,7 +104,7 @@ private:
     Heap& m_heap;
     size_t m_cell_size { 0 };
     FreelistEntry* m_freelist { nullptr };
-    u8 m_storage[];
+    alignas(Cell) u8 m_storage[];
 };
 
 }

@@ -31,10 +31,12 @@
 #include <LibGUI/Action.h>
 #include <LibGUI/Application.h>
 #include <LibGUI/Clipboard.h>
+#include <LibGUI/MessageBox.h>
 #include <LibGUI/Painter.h>
 #include <LibGUI/ScrollBar.h>
 #include <LibGUI/Window.h>
 #include <LibGfx/ImageDecoder.h>
+#include <LibGfx/ShareableBitmap.h>
 #include <LibJS/Runtime/Value.h>
 #include <LibWeb/DOM/Element.h>
 #include <LibWeb/DOM/ElementFactory.h>
@@ -43,6 +45,7 @@
 #include <LibWeb/HTML/HTMLAnchorElement.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
 #include <LibWeb/HTML/Parser/HTMLDocumentParser.h>
+#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Layout/LayoutBreak.h>
 #include <LibWeb/Layout/LayoutDocument.h>
 #include <LibWeb/Layout/LayoutNode.h>
@@ -50,12 +53,13 @@
 #include <LibWeb/Loader/ResourceLoader.h>
 #include <LibWeb/Page/EventHandler.h>
 #include <LibWeb/Page/Frame.h>
-#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Painting/PaintContext.h>
 #include <LibWeb/UIEvents/MouseEvent.h>
 #include <stdio.h>
 
 //#define SELECTION_DEBUG
+
+REGISTER_WIDGET(Web, InProcessWebView)
 
 namespace Web {
 
@@ -166,6 +170,16 @@ void InProcessWebView::page_did_request_link_context_menu(const Gfx::IntPoint& c
 {
     if (on_link_context_menu_request)
         on_link_context_menu_request(url, screen_relative_rect().location().translated(to_widget_position(content_position)));
+}
+
+void InProcessWebView::page_did_request_image_context_menu(const Gfx::IntPoint& content_position, const URL& url, [[maybe_unused]] const String& target, [[maybe_unused]] unsigned modifiers, const Gfx::Bitmap* bitmap)
+{
+    if (!on_image_context_menu_request)
+        return;
+    Gfx::ShareableBitmap shareable_bitmap;
+    if (bitmap)
+        shareable_bitmap = Gfx::ShareableBitmap(*bitmap);
+    on_image_context_menu_request(url, screen_relative_rect().location().translated(to_widget_position(content_position)), shareable_bitmap);
 }
 
 void InProcessWebView::page_did_click_link(const URL& url, const String& target, unsigned modifiers)
@@ -350,9 +364,7 @@ void InProcessWebView::reload()
 
 void InProcessWebView::load_html(const StringView& html, const URL& url)
 {
-    HTML::HTMLDocumentParser parser(html, "utf-8");
-    parser.run(url);
-    set_document(&parser.document());
+    page().main_frame().loader().load_html(html, url);
 }
 
 bool InProcessWebView::load(const URL& url)
@@ -414,6 +426,11 @@ void InProcessWebView::drop_event(GUI::DropEvent& event)
         }
     }
     ScrollableWidget::drop_event(event);
+}
+
+void InProcessWebView::page_did_request_alert(const String& message)
+{
+    GUI::MessageBox::show(window(), message, "Alert", GUI::MessageBox::Type::Information);
 }
 
 }

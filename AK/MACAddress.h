@@ -33,7 +33,7 @@
 class [[gnu::packed]] MACAddress
 {
 public:
-    MACAddress() {}
+    MACAddress() { }
     MACAddress(const u8 data[6])
     {
         __builtin_memcpy(m_data, data, 6);
@@ -47,7 +47,7 @@ public:
         m_data[4] = e;
         m_data[5] = f;
     }
-    ~MACAddress() {}
+    ~MACAddress() { }
 
     u8 operator[](int i) const
     {
@@ -62,7 +62,7 @@ public:
 
     String to_string() const
     {
-        return String::format("%02x:%02x:%02x:%02x:%02x:%02x", m_data[0], m_data[1], m_data[2], m_data[3], m_data[4], m_data[5]);
+        return String::formatted("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", m_data[0], m_data[1], m_data[2], m_data[3], m_data[4], m_data[5]);
     }
 
     bool is_zero() const
@@ -78,7 +78,7 @@ static_assert(sizeof(MACAddress) == 6);
 
 namespace AK {
 
-template <>
+template<>
 struct Traits<MACAddress> : public GenericTraits<MACAddress> {
     static unsigned hash(const MACAddress& address) { return string_hash((const char*)&address, sizeof(address)); }
 };

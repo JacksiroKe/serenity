@@ -47,6 +47,7 @@
 #include <signal.h>
 #include <stdio.h>
 
+RefPtr<JS::VM> vm;
 Vector<String> repl_statements;
 
 class ReplObject : public JS::GlobalObject {
@@ -167,7 +168,7 @@ static void print_array(JS::Array& array, HashTable<JS::Object*>& seen_objects)
         // The V8 repl doesn't throw an exception here, and instead just
         // prints 'undefined'. We may choose to replicate that behavior in
         // the future, but for now lets just catch the error
-        if (array.interpreter().exception())
+        if (vm->exception())
             return;
         print_value(value, seen_objects);
     }
@@ -187,7 +188,7 @@ static void print_object(JS::Object& object, HashTable<JS::Object*>& seen_object
         // The V8 repl doesn't throw an exception here, and instead just
         // prints 'undefined'. We may choose to replicate that behavior in
         // the future, but for now lets just catch the error
-        if (object.interpreter().exception())
+        if (vm->exception())
             return;
         print_value(value, seen_objects);
     }
@@ -279,6 +280,8 @@ static void print_value(JS::Value value, HashTable<JS::Object*>& seen_objects)
         printf("\033[34;1m");
     if (value.is_string())
         putchar('"');
+    else if (value.is_negative_zero())
+        putchar('-');
     printf("%s", value.to_string_without_side_effects().characters());
     if (value.is_string())
         putchar('"');
@@ -348,24 +351,24 @@ static bool parse_and_run(JS::Interpreter& interpreter, const StringView& source
         auto hint = error.source_location_hint(source);
         if (!hint.is_empty())
             printf("%s\n", hint.characters());
-        interpreter.throw_exception<JS::SyntaxError>(error.to_string());
+        vm->throw_exception<JS::SyntaxError>(interpreter.global_object(), error.to_string());
     } else {
         interpreter.run(interpreter.global_object(), *program);
     }
 
-    if (interpreter.exception()) {
+    if (vm->exception()) {
         printf("Uncaught exception: ");
-        print(interpreter.exception()->value());
-        auto trace = interpreter.exception()->trace();
+        print(vm->exception()->value());
+        auto trace = vm->exception()->trace();
         if (trace.size() > 1) {
             for (auto& function_name : trace)
                 printf(" -> %s\n", function_name.characters());
         }
-        interpreter.clear_exception();
+        vm->clear_exception();
         return false;
     }
     if (s_print_last_result)
-        print(interpreter.last_value());
+        print(vm->last_value());
     return true;
 }
 
@@ -389,9 +392,9 @@ ReplObject::~ReplObject()
 
 JS_DEFINE_NATIVE_FUNCTION(ReplObject::save_to_file)
 {
-    if (!interpreter.argument_count())
+    if (!vm.argument_count())
         return JS::Value(false);
-    String save_path = interpreter.argument(0).to_string_without_side_effects();
+    String save_path = vm.argument(0).to_string_without_side_effects();
     StringView path = StringView(save_path.characters());
     if (write_to_file(path)) {
         return JS::Value(true);
@@ -401,10 +404,10 @@ JS_DEFINE_NATIVE_FUNCTION(ReplObject::save_to_file)
 
 JS_DEFINE_NATIVE_FUNCTION(ReplObject::exit_interpreter)
 {
-    if (!interpreter.argument_count())
+    if (!vm.argument_count())
         exit(0);
-    auto exit_code = interpreter.argument(0).to_number(interpreter);
-    if (interpreter.exception())
+    auto exit_code = vm.argument(0).to_number(global_object);
+    if (::vm->exception())
         return {};
     exit(exit_code.as_double());
 }
@@ -421,10 +424,10 @@ JS_DEFINE_NATIVE_FUNCTION(ReplObject::repl_help)
 
 JS_DEFINE_NATIVE_FUNCTION(ReplObject::load_file)
 {
-    if (!interpreter.argument_count())
+    if (!vm.argument_count())
         return JS::Value(false);
 
-    for (auto& file : interpreter.call_frame().arguments) {
+    for (auto& file : vm.call_frame().arguments) {
         String file_name = file.as_string().string();
         auto js_file = Core::File::construct(file_name);
         if (!js_file->open(Core::IODevice::ReadOnly)) {
@@ -438,7 +441,7 @@ JS_DEFINE_NATIVE_FUNCTION(ReplObject::load_file)
         } else {
             source = file_contents;
         }
-        parse_and_run(interpreter, source);
+        parse_and_run(vm.interpreter(), source);
     }
     return JS::Value(true);
 }
@@ -469,32 +472,32 @@ public:
 
     virtual JS::Value log() override
     {
-        puts(interpreter().join_arguments().characters());
+        puts(vm().join_arguments().characters());
         return JS::js_undefined();
     }
     virtual JS::Value info() override
     {
-        printf("(i) %s\n", interpreter().join_arguments().characters());
+        printf("(i) %s\n", vm().join_arguments().characters());
         return JS::js_undefined();
     }
     virtual JS::Value debug() override
     {
         printf("\033[36;1m");
-        puts(interpreter().join_arguments().characters());
+        puts(vm().join_arguments().characters());
         printf("\033[0m");
         return JS::js_undefined();
     }
     virtual JS::Value warn() override
     {
         printf("\033[33;1m");
-        puts(interpreter().join_arguments().characters());
+        puts(vm().join_arguments().characters());
         printf("\033[0m");
         return JS::js_undefined();
     }
     virtual JS::Value error() override
     {
         printf("\033[31;1m");
-        puts(interpreter().join_arguments().characters());
+        puts(vm().join_arguments().characters());
         printf("\033[0m");
         return JS::js_undefined();
     }
@@ -506,7 +509,7 @@ public:
     }
     virtual JS::Value trace() override
     {
-        puts(interpreter().join_arguments().characters());
+        puts(vm().join_arguments().characters());
         auto trace = get_trace();
         for (auto& function_name : trace) {
             if (function_name.is_empty())
@@ -517,14 +520,14 @@ public:
     }
     virtual JS::Value count() override
     {
-        auto label = interpreter().argument_count() ? interpreter().argument(0).to_string_without_side_effects() : "default";
+        auto label = vm().argument_count() ? vm().argument(0).to_string_without_side_effects() : "default";
         auto counter_value = m_console.counter_increment(label);
         printf("%s: %u\n", label.characters(), counter_value);
         return JS::js_undefined();
     }
     virtual JS::Value count_reset() override
     {
-        auto label = interpreter().argument_count() ? interpreter().argument(0).to_string_without_side_effects() : "default";
+        auto label = vm().argument_count() ? vm().argument(0).to_string_without_side_effects() : "default";
         if (m_console.counter_reset(label)) {
             printf("%s: 0\n", label.characters());
         } else {
@@ -552,20 +555,21 @@ int main(int argc, char** argv)
 
     bool syntax_highlight = !disable_syntax_highlight;
 
+    vm = JS::VM::create();
     OwnPtr<JS::Interpreter> interpreter;
 
     interrupt_interpreter = [&] {
         auto error = JS::Error::create(interpreter->global_object(), "Error", "Received SIGINT");
-        interpreter->throw_exception(error);
+        vm->throw_exception(interpreter->global_object(), error);
     };
 
     if (script_path == nullptr) {
         s_print_last_result = true;
-        interpreter = JS::Interpreter::create<ReplObject>();
-        ReplConsoleClient console_client(interpreter->console());
-        interpreter->console().set_client(console_client);
+        interpreter = JS::Interpreter::create<ReplObject>(*vm);
+        ReplConsoleClient console_client(interpreter->global_object().console());
+        interpreter->global_object().console().set_client(console_client);
         interpreter->heap().set_should_collect_on_every_allocation(gc_on_every_allocation);
-        interpreter->set_underscore_is_last_value(true);
+        interpreter->vm().set_underscore_is_last_value(true);
 
         s_editor = Line::Editor::construct();
 
@@ -598,117 +602,35 @@ int main(int argc, char** argv)
                     }
                 }
 
-                switch (token.type()) {
-                case JS::TokenType::Invalid:
-                case JS::TokenType::Eof:
+                switch (token.category()) {
+                case JS::TokenCategory::Invalid:
                     stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Red), Line::Style::Underline });
                     break;
-                case JS::TokenType::NumericLiteral:
-                case JS::TokenType::BigIntLiteral:
+                case JS::TokenCategory::Number:
                     stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Magenta) });
                     break;
-                case JS::TokenType::StringLiteral:
-                case JS::TokenType::TemplateLiteralStart:
-                case JS::TokenType::TemplateLiteralEnd:
-                case JS::TokenType::TemplateLiteralString:
-                case JS::TokenType::RegexLiteral:
-                case JS::TokenType::RegexFlags:
-                case JS::TokenType::UnterminatedStringLiteral:
+                case JS::TokenCategory::String:
                     stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Green), Line::Style::Bold });
                     break;
-                case JS::TokenType::BracketClose:
-                case JS::TokenType::BracketOpen:
-                case JS::TokenType::Comma:
-                case JS::TokenType::CurlyClose:
-                case JS::TokenType::CurlyOpen:
-                case JS::TokenType::ParenClose:
-                case JS::TokenType::ParenOpen:
-                case JS::TokenType::Semicolon:
-                case JS::TokenType::Period:
+                case JS::TokenCategory::Punctuation:
                     break;
-                case JS::TokenType::Ampersand:
-                case JS::TokenType::AmpersandEquals:
-                case JS::TokenType::Asterisk:
-                case JS::TokenType::DoubleAsteriskEquals:
-                case JS::TokenType::AsteriskEquals:
-                case JS::TokenType::Caret:
-                case JS::TokenType::CaretEquals:
-                case JS::TokenType::DoubleAmpersand:
-                case JS::TokenType::DoubleAsterisk:
-                case JS::TokenType::DoublePipe:
-                case JS::TokenType::DoubleQuestionMark:
-                case JS::TokenType::Equals:
-                case JS::TokenType::EqualsEquals:
-                case JS::TokenType::EqualsEqualsEquals:
-                case JS::TokenType::ExclamationMark:
-                case JS::TokenType::ExclamationMarkEquals:
-                case JS::TokenType::ExclamationMarkEqualsEquals:
-                case JS::TokenType::GreaterThan:
-                case JS::TokenType::GreaterThanEquals:
-                case JS::TokenType::LessThan:
-                case JS::TokenType::LessThanEquals:
-                case JS::TokenType::Minus:
-                case JS::TokenType::MinusEquals:
-                case JS::TokenType::MinusMinus:
-                case JS::TokenType::Percent:
-                case JS::TokenType::PercentEquals:
-                case JS::TokenType::Pipe:
-                case JS::TokenType::PipeEquals:
-                case JS::TokenType::Plus:
-                case JS::TokenType::PlusEquals:
-                case JS::TokenType::PlusPlus:
-                case JS::TokenType::QuestionMark:
-                case JS::TokenType::QuestionMarkPeriod:
-                case JS::TokenType::ShiftLeft:
-                case JS::TokenType::ShiftLeftEquals:
-                case JS::TokenType::ShiftRight:
-                case JS::TokenType::ShiftRightEquals:
-                case JS::TokenType::Slash:
-                case JS::TokenType::SlashEquals:
-                case JS::TokenType::Tilde:
-                case JS::TokenType::UnsignedShiftRight:
-                case JS::TokenType::UnsignedShiftRightEquals:
+                case JS::TokenCategory::Operator:
                     break;
-                case JS::TokenType::BoolLiteral:
-                case JS::TokenType::NullLiteral:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow), Line::Style::Bold });
+                case JS::TokenCategory::Keyword:
+                    switch (token.type()) {
+                    case JS::TokenType::BoolLiteral:
+                    case JS::TokenType::NullLiteral:
+                        stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Yellow), Line::Style::Bold });
+                        break;
+                    default:
+                        stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Blue), Line::Style::Bold });
+                        break;
+                    }
                     break;
-                case JS::TokenType::Class:
-                case JS::TokenType::Const:
-                case JS::TokenType::Debugger:
-                case JS::TokenType::Delete:
-                case JS::TokenType::Extends:
-                case JS::TokenType::Function:
-                case JS::TokenType::In:
-                case JS::TokenType::Instanceof:
-                case JS::TokenType::Interface:
-                case JS::TokenType::Let:
-                case JS::TokenType::New:
-                case JS::TokenType::Super:
-                case JS::TokenType::TemplateLiteralExprStart:
-                case JS::TokenType::TemplateLiteralExprEnd:
-                case JS::TokenType::Throw:
-                case JS::TokenType::Typeof:
-                case JS::TokenType::Var:
-                case JS::TokenType::Void:
-                    stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Blue), Line::Style::Bold });
-                    break;
-                case JS::TokenType::Await:
-                case JS::TokenType::Case:
-                case JS::TokenType::Catch:
-                case JS::TokenType::Do:
-                case JS::TokenType::Else:
-                case JS::TokenType::Finally:
-                case JS::TokenType::For:
-                case JS::TokenType::If:
-                case JS::TokenType::Return:
-                case JS::TokenType::Switch:
-                case JS::TokenType::Try:
-                case JS::TokenType::While:
-                case JS::TokenType::Yield:
+                case JS::TokenCategory::ControlKeyword:
                     stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::Cyan), Line::Style::Italic });
                     break;
-                case JS::TokenType::Identifier:
+                case JS::TokenCategory::Identifier:
                     stylize({ start, end }, { Line::Style::Foreground(Line::Style::XtermColor::White), Line::Style::Bold });
                 default:
                     break;
@@ -808,7 +730,7 @@ int main(int argc, char** argv)
 
             switch (mode) {
             case CompleteProperty: {
-                auto maybe_variable = interpreter->get_variable(variable_name, interpreter->global_object());
+                auto maybe_variable = vm->get_variable(variable_name, interpreter->global_object());
                 if (maybe_variable.is_empty()) {
                     maybe_variable = interpreter->global_object().get(FlyString(variable_name));
                     if (maybe_variable.is_empty())
@@ -819,7 +741,7 @@ int main(int argc, char** argv)
                 if (!variable.is_object())
                     break;
 
-                const auto* object = variable.to_object(*interpreter, interpreter->global_object());
+                const auto* object = variable.to_object(interpreter->global_object());
                 const auto& shape = object->shape();
                 list_all_properties(shape, property_name);
                 if (results.size())
@@ -842,9 +764,9 @@ int main(int argc, char** argv)
         s_editor->on_tab_complete = move(complete);
         repl(*interpreter);
     } else {
-        interpreter = JS::Interpreter::create<JS::GlobalObject>();
-        ReplConsoleClient console_client(interpreter->console());
-        interpreter->console().set_client(console_client);
+        interpreter = JS::Interpreter::create<JS::GlobalObject>(*vm);
+        ReplConsoleClient console_client(interpreter->global_object().console());
+        interpreter->global_object().console().set_client(console_client);
         interpreter->heap().set_should_collect_on_every_allocation(gc_on_every_allocation);
 
         signal(SIGINT, [](int) {

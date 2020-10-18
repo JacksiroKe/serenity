@@ -89,7 +89,7 @@ public:
     static bool is_initialized();
 
     static void initialize(u32 cpu);
-    
+
     static inline MemoryManagerData& get_data()
     {
         return Processor::current().get_mm_data();
@@ -100,12 +100,6 @@ public:
     void enter_process_paging_scope(Process&);
 
     bool validate_user_stack(const Process&, VirtualAddress) const;
-    bool validate_user_read(const Process&, VirtualAddress, size_t) const;
-    bool validate_user_write(const Process&, VirtualAddress, size_t) const;
-
-    bool validate_kernel_read(const Process&, VirtualAddress, size_t) const;
-
-    bool can_read_without_faulting(const Process&, VirtualAddress, size_t) const;
 
     enum class ShouldZeroFill {
         No,

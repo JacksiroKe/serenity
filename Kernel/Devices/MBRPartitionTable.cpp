@@ -49,7 +49,8 @@ const MBRPartitionHeader& MBRPartitionTable::header() const
 
 bool MBRPartitionTable::initialize()
 {
-    if (!m_device->read_block(0, m_cached_header)) {
+    auto header_buffer = UserOrKernelBuffer::for_kernel_buffer(m_cached_header);
+    if (!m_device->read_block(0, header_buffer)) {
         return false;
     }
 
@@ -89,7 +90,7 @@ RefPtr<DiskPartition> MBRPartitionTable::partition(unsigned index)
     auto& entry = header.entry[index - 1];
 
     if (header.mbr_signature != MBR_SIGNATURE) {
-        klog() << "MBRPartitionTable::initialize: bad mbr signature - not initalized? 0x" << String::format("%x", header.mbr_signature);
+        klog() << "MBRPartitionTable::initialize: bad mbr signature - not initialized? 0x" << String::format("%x", header.mbr_signature);
         return nullptr;
     }
 

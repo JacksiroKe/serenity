@@ -60,6 +60,9 @@ public:
 
     virtual void set_document(TextDocument&);
 
+    const String& placeholder() const { return m_placeholder; }
+    void set_placeholder(const StringView& placeholder) { m_placeholder = placeholder; }
+
     void set_visualize_trailing_whitespace(bool);
     bool visualize_trailing_whitespace() const { return m_visualize_trailing_whitespace; }
 
@@ -128,8 +131,8 @@ public:
     void do_delete();
     void delete_current_line();
     void select_all();
-    void undo() { document().undo(); }
-    void redo() { document().redo(); }
+    virtual void undo() { document().undo(); }
+    virtual void redo() { document().redo(); }
 
     Function<void()> on_change;
     Function<void()> on_mousedown;
@@ -178,11 +181,13 @@ protected:
     virtual void context_menu_event(ContextMenuEvent&) override;
     virtual void resize_event(ResizeEvent&) override;
     virtual void theme_change_event(ThemeChangeEvent&) override;
-    virtual void cursor_did_change() {}
+    virtual void cursor_did_change() { }
     Gfx::IntRect ruler_content_rect(size_t line) const;
 
     TextPosition text_position_at(const Gfx::IntPoint&) const;
     bool ruler_visible() const { return m_ruler_visible; }
+    Gfx::IntRect content_rect_for_position(const TextPosition&) const;
+    int ruler_width() const;
 
 private:
     friend class TextDocumentLine;
@@ -228,7 +233,6 @@ private:
     Gfx::IntRect line_content_rect(size_t item_index) const;
     Gfx::IntRect line_widget_rect(size_t line_index) const;
     Gfx::IntRect cursor_content_rect() const;
-    Gfx::IntRect content_rect_for_position(const TextPosition&) const;
     void update_cursor();
     const NonnullOwnPtrVector<TextDocumentLine>& lines() const { return document().lines(); }
     NonnullOwnPtrVector<TextDocumentLine>& lines() { return document().lines(); }
@@ -236,7 +240,6 @@ private:
     const TextDocumentLine& line(size_t index) const { return document().line(index); }
     TextDocumentLine& current_line() { return line(m_cursor.line()); }
     const TextDocumentLine& current_line() const { return line(m_cursor.line()); }
-    int ruler_width() const;
     void toggle_selection_if_needed_for_event(const KeyEvent&);
     void delete_selection();
     void did_update_selection();
@@ -260,9 +263,12 @@ private:
     inline void execute(Args&&... args)
     {
         auto command = make<T>(*m_document, forward<Args>(args)...);
+        on_edit_action(*command);
         command->execute_from(*this);
         m_document->add_to_undo_stack(move(command));
     }
+
+    virtual void on_edit_action(const Command&) { }
 
     Type m_type { MultiLine };
     Mode m_mode { Editable };
@@ -300,6 +306,8 @@ private:
     bool is_visual_data_up_to_date() const { return !m_reflow_requested; }
 
     RefPtr<TextDocument> m_document;
+
+    String m_placeholder { "" };
 
     template<typename Callback>
     void for_each_visual_line(size_t line_index, Callback) const;

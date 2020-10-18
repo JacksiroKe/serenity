@@ -28,9 +28,9 @@
 
 #define _STDIO_H // Make GMP believe we exist.
 
+#include <bits/FILE.h>
 #include <limits.h>
 #include <stdarg.h>
-#include <bits/FILE.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
 
@@ -93,7 +93,7 @@ int fprintf(FILE*, const char* fmt, ...);
 int printf(const char* fmt, ...);
 int dbgprintf(const char* fmt, ...);
 void dbgputch(char);
-ssize_t dbgputstr(const char*, ssize_t);
+int dbgputstr(const char*, ssize_t);
 int sprintf(char* buffer, const char* fmt, ...);
 int snprintf(char* buffer, size_t, const char* fmt, ...);
 int putchar(int ch);

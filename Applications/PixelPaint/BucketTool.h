@@ -36,9 +36,13 @@ public:
     virtual ~BucketTool() override;
 
     virtual void on_mousedown(Layer&, GUI::MouseEvent& layer_event, GUI::MouseEvent& image_event) override;
+    virtual GUI::Widget* get_properties_widget() override;
 
 private:
     virtual const char* class_name() const override { return "BucketTool"; }
+
+    RefPtr<GUI::Widget> m_properties_widget;
+    int m_threshold { 0 };
 };
 
 }

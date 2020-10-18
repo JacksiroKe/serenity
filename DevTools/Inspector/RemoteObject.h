@@ -26,10 +26,12 @@
 
 #pragma once
 
-#include <AK/String.h>
 #include <AK/JsonObject.h>
 #include <AK/NonnullOwnPtrVector.h>
+#include <AK/String.h>
 #include <AK/Vector.h>
+
+namespace Inspector {
 
 class RemoteObjectPropertyModel;
 
@@ -51,3 +53,5 @@ public:
 
     NonnullRefPtr<RemoteObjectPropertyModel> m_property_model;
 };
+
+}

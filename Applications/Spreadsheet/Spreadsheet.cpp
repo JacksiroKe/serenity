@@ -31,9 +31,11 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonParser.h>
+#include <AK/TemporaryChange.h>
 #include <LibCore/File.h>
 #include <LibJS/Parser.h>
 #include <LibJS/Runtime/Function.h>
+#include <ctype.h>
 
 namespace Spreadsheet {
 
@@ -63,17 +65,16 @@ Sheet::Sheet(Workbook& workbook)
         auto buffer = file_or_error.value()->read_all();
         JS::Parser parser { JS::Lexer(buffer) };
         if (parser.has_errors()) {
-            dbg() << "Spreadsheet: Failed to parse runtime code";
+            dbgln("Spreadsheet: Failed to parse runtime code");
             for (auto& error : parser.errors())
-                dbg() << "Error: " << error.to_string() << "\n"
-                      << error.source_location_hint(buffer);
+                dbgln("Error: {}\n{}", error.to_string(), error.source_location_hint(buffer));
         } else {
             interpreter().run(global_object(), parser.parse_program());
             if (auto exc = interpreter().exception()) {
-                dbg() << "Spreadsheet: Failed to run runtime code: ";
+                dbgln("Spreadsheet: Failed to run runtime code: ");
                 for (auto& t : exc->trace())
-                    dbg() << t;
-                interpreter().clear_exception();
+                    dbgln("{}", t);
+                interpreter().vm().clear_exception();
             }
         }
     }
@@ -160,11 +161,11 @@ JS::Value Sheet::evaluate(const StringView& source, Cell* on_behalf_of)
     interpreter().run(global_object(), program);
     if (interpreter().exception()) {
         auto exc = interpreter().exception()->value();
-        interpreter().clear_exception();
+        interpreter().vm().clear_exception();
         return exc;
     }
 
-    auto value = interpreter().last_value();
+    auto value = interpreter().vm().last_value();
     if (value.is_empty())
         return JS::js_undefined();
     return value;
@@ -192,8 +193,8 @@ Cell* Sheet::at(const Position& position)
 Optional<Position> Sheet::parse_cell_name(const StringView& name)
 {
     GenericLexer lexer(name);
-    auto col = lexer.consume_while([](auto c) { return is_alpha(c); });
-    auto row = lexer.consume_while([](auto c) { return is_alphanum(c) && !is_alpha(c); });
+    auto col = lexer.consume_while(isalpha);
+    auto row = lexer.consume_while(isdigit);
 
     if (!lexer.is_eof() || row.is_empty() || col.is_empty())
         return {};
@@ -225,6 +226,13 @@ RefPtr<Sheet> Sheet::from_json(const JsonObject& object, Workbook& workbook)
     auto json = sheet->interpreter().global_object().get("JSON");
     auto& parse_function = json.as_object().get("parse").as_function();
 
+    auto read_format = [](auto& format, const auto& obj) {
+        if (auto value = obj.get("foreground_color"); value.is_string())
+            format.foreground_color = Color::from_string(value.as_string());
+        if (auto value = obj.get("background_color"); value.is_string())
+            format.background_color = Color::from_string(value.as_string());
+    };
+
     cells.for_each_member([&](auto& name, JsonValue& value) {
         auto position_option = parse_cell_name(name);
         if (!position_option.has_value())
@@ -237,14 +245,60 @@ RefPtr<Sheet> Sheet::from_json(const JsonObject& object, Workbook& workbook)
         OwnPtr<Cell> cell;
         switch (kind) {
         case Cell::LiteralString:
-            cell = make<Cell>(obj.get("value").to_string(), sheet->make_weak_ptr());
+            cell = make<Cell>(obj.get("value").to_string(), position, sheet->make_weak_ptr());
             break;
         case Cell::Formula: {
             auto& interpreter = sheet->interpreter();
-            auto value = interpreter.call(parse_function, json, JS::js_string(interpreter, obj.get("value").as_string()));
-            cell = make<Cell>(obj.get("source").to_string(), move(value), sheet->make_weak_ptr());
+            auto value = interpreter.vm().call(parse_function, json, JS::js_string(interpreter.heap(), obj.get("value").as_string()));
+            cell = make<Cell>(obj.get("source").to_string(), move(value), position, sheet->make_weak_ptr());
             break;
         }
+        }
+
+        auto type_name = obj.get_or("type", "Numeric").to_string();
+        cell->set_type(type_name);
+
+        auto type_meta = obj.get("type_metadata");
+        if (type_meta.is_object()) {
+            auto& meta_obj = type_meta.as_object();
+            auto meta = cell->type_metadata();
+            if (auto value = meta_obj.get("length"); value.is_number())
+                meta.length = value.to_i32();
+            if (auto value = meta_obj.get("format"); value.is_string())
+                meta.format = value.as_string();
+            read_format(meta.static_format, meta_obj);
+
+            cell->set_type_metadata(move(meta));
+        }
+
+        auto conditional_formats = obj.get("conditional_formats");
+        auto cformats = cell->conditional_formats();
+        if (conditional_formats.is_array()) {
+            conditional_formats.as_array().for_each([&](const auto& fmt_val) {
+                if (!fmt_val.is_object())
+                    return IterationDecision::Continue;
+
+                auto& fmt_obj = fmt_val.as_object();
+                auto fmt_cond = fmt_obj.get("condition").to_string();
+                if (fmt_cond.is_empty())
+                    return IterationDecision::Continue;
+
+                ConditionalFormat fmt;
+                fmt.condition = move(fmt_cond);
+                read_format(fmt, fmt_obj);
+                cformats.append(move(fmt));
+
+                return IterationDecision::Continue;
+            });
+            cell->set_conditional_formats(move(cformats));
+        }
+
+        auto evaluated_format = obj.get("evaluated_formats");
+        if (evaluated_format.is_object()) {
+            auto& evaluated_format_obj = evaluated_format.as_object();
+            auto& evaluated_fmts = cell->m_evaluated_formats;
+
+            read_format(evaluated_fmts, evaluated_format_obj);
         }
 
         sheet->m_cells.set(position, cell.release_nonnull());
@@ -259,6 +313,13 @@ JsonObject Sheet::to_json() const
     JsonObject object;
     object.set("name", m_name);
 
+    auto save_format = [](const auto& format, auto& obj) {
+        if (format.foreground_color.has_value())
+            obj.set("foreground_color", format.foreground_color.value().to_string());
+        if (format.background_color.has_value())
+            obj.set("background_color", format.background_color.value().to_string());
+    };
+
     auto columns = JsonArray();
     for (auto& column : m_columns)
         columns.append(column);
@@ -270,7 +331,7 @@ JsonObject Sheet::to_json() const
     for (auto& it : m_cells) {
         StringBuilder builder;
         builder.append(it.key.column);
-        builder.appendf("%zu", it.key.row);
+        builder.appendff("{}", it.key.row);
         auto key = builder.to_string();
 
         JsonObject data;
@@ -278,11 +339,44 @@ JsonObject Sheet::to_json() const
         if (it.value->kind == Cell::Formula) {
             data.set("source", it.value->data);
             auto json = interpreter().global_object().get("JSON");
-            auto stringified = interpreter().call(json.as_object().get("stringify").as_function(), json, it.value->evaluated_data);
+            auto stringified = interpreter().vm().call(json.as_object().get("stringify").as_function(), json, it.value->evaluated_data);
             data.set("value", stringified.to_string_without_side_effects());
         } else {
             data.set("value", it.value->data);
         }
+
+        // Set type & meta
+        auto& type = it.value->type();
+        auto& meta = it.value->type_metadata();
+        data.set("type", type.name());
+
+        JsonObject metadata_object;
+        metadata_object.set("length", meta.length);
+        metadata_object.set("format", meta.format);
+#if 0
+        metadata_object.set("alignment", alignment_to_string(meta.alignment));
+#endif
+        save_format(meta.static_format, metadata_object);
+
+        data.set("type_metadata", move(metadata_object));
+
+        // Set conditional formats
+        JsonArray conditional_formats;
+        for (auto& fmt : it.value->conditional_formats()) {
+            JsonObject fmt_object;
+            fmt_object.set("condition", fmt.condition);
+            save_format(fmt, fmt_object);
+
+            conditional_formats.append(move(fmt_object));
+        }
+
+        data.set("conditional_formats", move(conditional_formats));
+
+        auto& evaluated_formats = it.value->evaluated_formats();
+        JsonObject evaluated_formats_obj;
+
+        save_format(evaluated_formats, evaluated_formats_obj);
+        data.set("evaluated_formats", move(evaluated_formats_obj));
 
         cells.set(key, move(data));
     }
@@ -305,7 +399,7 @@ JsonObject Sheet::gather_documentation() const
         if (!value_object.has_own_property(doc_name))
             return;
 
-        dbg() << "Found '" << it.key.to_display_string() << "'";
+        dbgln("Found '{}'", it.key.to_display_string());
         auto doc = value_object.get(doc_name);
         if (!doc.is_string())
             return;
@@ -316,7 +410,7 @@ JsonObject Sheet::gather_documentation() const
         if (doc_object.has_value())
             object.set(it.key.to_display_string(), doc_object.value());
         else
-            dbg() << "Sheet::gather_documentation(): Failed to parse the documentation for '" << it.key.to_display_string() << "'!";
+            dbgln("Sheet::gather_documentation(): Failed to parse the documentation for '{}'!", it.key.to_display_string());
     };
 
     for (auto& it : interpreter().global_object().shape().property_table())

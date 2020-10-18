@@ -49,7 +49,8 @@ const GPTPartitionHeader& GPTPartitionTable::header() const
 
 bool GPTPartitionTable::initialize()
 {
-    if (!m_device->read_block(1, m_cached_header)) {
+    auto header_buffer = UserOrKernelBuffer::for_kernel_buffer(m_cached_header);
+    if (!m_device->read_block(1, header_buffer)) {
         return false;
     }
 
@@ -75,14 +76,15 @@ RefPtr<DiskPartition> GPTPartitionTable::partition(unsigned index)
     unsigned lba = header.partition_array_start_lba + (((index - 1) * header.partition_entry_size) / BytesPerSector);
 
     if (header.sig[0] != GPT_SIGNATURE) {
-        klog() << "GPTPartitionTable::initialize: bad gpt signature - not initalized? 0x" << String::format("%x", header.sig);
+        klog() << "GPTPartitionTable::initialize: bad gpt signature - not initialized? 0x" << String::format("%x", header.sig);
         return nullptr;
     }
 
     u8 entries_per_sector = BytesPerSector / header.partition_entry_size;
 
     GPTPartitionEntry entries[entries_per_sector];
-    this->m_device->read_blocks(lba, 1, (u8*)&entries);
+    auto entries_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&entries);
+    this->m_device->read_blocks(lba, 1, entries_buffer);
     GPTPartitionEntry& entry = entries[((index - 1) % entries_per_sector)];
 
 #ifdef GPT_DEBUG

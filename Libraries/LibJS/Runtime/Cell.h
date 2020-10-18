@@ -60,8 +60,7 @@ public:
     virtual void visit_children(Visitor&) { }
 
     Heap& heap() const;
-    Interpreter& interpreter();
-    Interpreter& interpreter() const;
+    VM& vm() const;
 
 protected:
     Cell() { }

@@ -41,7 +41,8 @@ public:
     virtual ~Thread();
 
     void start();
-    void quit(void *code = 0);
+    void quit(void* code = 0);
+    pthread_t tid() const { return m_tid; }
 
 private:
     Function<int()> m_action;

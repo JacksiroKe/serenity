@@ -51,7 +51,7 @@ struct PropertyDescriptor {
     Function* getter { nullptr };
     Function* setter { nullptr };
 
-    static PropertyDescriptor from_dictionary(Interpreter&, const Object&);
+    static PropertyDescriptor from_dictionary(VM&, const Object&);
 
     bool is_accessor_descriptor() const { return getter || setter; }
     bool is_data_descriptor() const { return !(value.is_empty() && !attributes.has_writable()); }
@@ -63,6 +63,7 @@ public:
     static Object* create_empty(GlobalObject&);
 
     explicit Object(Object& prototype);
+    explicit Object(Shape&);
     virtual void initialize(GlobalObject&) override;
     virtual ~Object();
 
@@ -103,10 +104,11 @@ public:
 
     virtual bool define_property(const StringOrSymbol& property_name, const Object& descriptor, bool throw_exceptions = true);
     bool define_property(const PropertyName&, Value value, PropertyAttributes attributes = default_attributes, bool throw_exceptions = true);
+    bool define_property_without_transition(const PropertyName&, Value value, PropertyAttributes attributes = default_attributes, bool throw_exceptions = true);
     bool define_accessor(const PropertyName&, Function& getter_or_setter, bool is_getter, PropertyAttributes attributes = default_attributes, bool throw_exceptions = true);
 
-    bool define_native_function(const StringOrSymbol& property_name, AK::Function<Value(Interpreter&, GlobalObject&)>, i32 length = 0, PropertyAttributes attributes = default_attributes);
-    bool define_native_property(const StringOrSymbol& property_name, AK::Function<Value(Interpreter&, GlobalObject&)> getter, AK::Function<void(Interpreter&, GlobalObject&, Value)> setter, PropertyAttributes attributes = default_attributes);
+    bool define_native_function(const StringOrSymbol& property_name, AK::Function<Value(VM&, GlobalObject&)>, i32 length = 0, PropertyAttributes attributes = default_attributes);
+    bool define_native_property(const StringOrSymbol& property_name, AK::Function<Value(VM&, GlobalObject&)> getter, AK::Function<void(VM&, GlobalObject&, Value)> setter, PropertyAttributes attributes = default_attributes);
 
     virtual Value delete_property(const PropertyName&);
 
@@ -149,6 +151,11 @@ public:
 
     Value invoke(const StringOrSymbol& property_name, Optional<MarkedValueList> arguments = {});
 
+    void ensure_shape_is_unique();
+
+    void enable_transitions() { m_transitions_enabled = true; }
+    void disable_transitions() { m_transitions_enabled = false; }
+
 protected:
     enum class GlobalObjectTag { Tag };
     enum class ConstructWithoutPrototypeTag { Tag };
@@ -165,9 +172,9 @@ private:
     void call_native_property_setter(Object* this_object, Value property, Value) const;
 
     void set_shape(Shape&);
-    void ensure_shape_is_unique();
 
     bool m_is_extensible { true };
+    bool m_transitions_enabled { true };
     Shape* m_shape { nullptr };
     Vector<Value> m_storage;
     IndexedProperties m_indexed_properties;

@@ -39,6 +39,16 @@ inline unsigned int_hash(u32 key)
     return key;
 }
 
+inline unsigned double_hash(u32 key)
+{
+    key = ~key + (key >> 23);
+    key ^= (key << 12);
+    key ^= (key >> 7);
+    key ^= (key << 2);
+    key ^= (key >> 20);
+    return key;
+}
+
 inline unsigned pair_int_hash(u32 key1, u32 key2)
 {
     return int_hash((int_hash(key1) * 209) ^ (int_hash(key2 * 413)));
@@ -53,7 +63,7 @@ inline unsigned u64_hash(u64 key)
 
 inline unsigned ptr_hash(FlatPtr ptr)
 {
-    if constexpr(sizeof(ptr) == 8)
+    if constexpr (sizeof(ptr) == 8)
         return u64_hash((u64)ptr);
     else
         return int_hash((u32)ptr);

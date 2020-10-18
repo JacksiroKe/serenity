@@ -30,10 +30,12 @@
 #include <AK/NonnullOwnPtr.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/ListView.h>
+#include <LibGUI/Menu.h>
 #include <LibGUI/Model.h>
 #include <LibGUI/TableView.h>
 #include <LibGUI/ToolBar.h>
 #include <LibGUI/ToolBarContainer.h>
+#include <LibGUI/TreeView.h>
 #include <LibGUI/Widget.h>
 #include <sys/arch/i386/regs.h>
 
@@ -42,7 +44,7 @@ namespace HackStudio {
 class DebugInfoWidget final : public GUI::Widget {
     C_OBJECT(DebugInfoWidget)
 public:
-    virtual ~DebugInfoWidget() override {}
+    virtual ~DebugInfoWidget() override { }
 
     void update_state(const Debug::DebugSession&, const PtraceRegisters&);
     void program_stopped();

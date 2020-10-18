@@ -34,13 +34,16 @@ class Command {
 public:
     virtual ~Command();
 
-    virtual void undo() {}
-    virtual void redo() {}
+    virtual void undo() { }
+    virtual void redo() { }
 
     String action_text() const { return m_action_text; }
 
+    virtual bool is_insert_text() const { return false; }
+    virtual bool is_remove_text() const { return false; }
+
 protected:
-    Command() {}
+    Command() { }
     void set_action_text(const String& text) { m_action_text = text; }
 
 private:

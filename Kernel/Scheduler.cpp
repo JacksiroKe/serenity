@@ -50,6 +50,8 @@ class SchedulerPerProcessorData {
 public:
     SchedulerPerProcessorData() = default;
 
+    WeakPtr<Thread> m_pending_beneficiary;
+    const char* m_pending_donate_reason { nullptr };
     bool m_in_scheduler { true };
 };
 
@@ -82,19 +84,62 @@ Atomic<bool> g_finalizer_has_work { false };
 static Process* s_colonel_process;
 u64 g_uptime;
 
-Thread::JoinBlocker::JoinBlocker(Thread& joinee, void*& joinee_exit_value)
-    : m_joinee(joinee)
+Thread::JoinBlocker::JoinBlocker(Thread& joinee, KResult& try_join_result, void*& joinee_exit_value)
+    : m_joinee(&joinee)
     , m_joinee_exit_value(joinee_exit_value)
 {
-    ASSERT(m_joinee.m_joiner == nullptr);
-    auto current_thread = Thread::current();
-    m_joinee.m_joiner = current_thread;
-    current_thread->m_joinee = &joinee;
+    auto* current_thread = Thread::current();
+    // We need to hold our lock to avoid a race where try_join succeeds
+    // but the joinee is joining immediately
+    ScopedSpinLock lock(m_lock);
+    try_join_result = joinee.try_join(*current_thread);
+    m_join_error = try_join_result.is_error();
 }
 
-bool Thread::JoinBlocker::should_unblock(Thread& joiner)
+void Thread::JoinBlocker::was_unblocked()
 {
-    return !joiner.m_joinee;
+    ScopedSpinLock lock(m_lock);
+    if (!m_join_error && m_joinee) {
+        // If the joinee hasn't exited yet, remove ourselves now
+        ASSERT(m_joinee != Thread::current());
+        m_joinee->join_done();
+        m_joinee = nullptr;
+    }
+}
+
+bool Thread::JoinBlocker::should_unblock(Thread&)
+{
+    // We need to acquire our lock as the joinee could call joinee_exited
+    // at any moment
+    ScopedSpinLock lock(m_lock);
+
+    if (m_join_error) {
+        // Thread::block calls should_unblock before actually blocking.
+        // If detected that we can't really block due to an error, we'll
+        // return true here, which will cause Thread::block to return
+        // with BlockResult::NotBlocked. Technically, because m_join_error
+        // will only be set in the constructor, we don't need any lock
+        // to check for it, but at the same time there should not be
+        // any contention, either...
+        return true;
+    }
+
+    return m_joinee == nullptr;
+}
+
+void Thread::JoinBlocker::joinee_exited(void* value)
+{
+    ScopedSpinLock lock(m_lock);
+    if (!m_joinee) {
+        // m_joinee can be nullptr if the joiner timed out and the
+        // joinee waits on m_lock while the joiner holds it but has
+        // not yet called join_done.
+        return;
+    }
+
+    m_joinee_exit_value = value;
+    m_joinee = nullptr;
+    set_interrupted_by_death();
 }
 
 Thread::FileDescriptionBlocker::FileDescriptionBlocker(const FileDescription& description)
@@ -347,7 +392,8 @@ bool Scheduler::pick_next()
     // prevents a recursive call into Scheduler::invoke_async upon
     // leaving the scheduler lock.
     ScopedCritical critical;
-    Processor::current().get_scheduler_data().m_in_scheduler = true;
+    auto& scheduler_data = Processor::current().get_scheduler_data();
+    scheduler_data.m_in_scheduler = true;
     ScopeGuard guard(
         []() {
             // We may be on a different processor after we got switched
@@ -437,15 +483,41 @@ bool Scheduler::pick_next()
     });
 #endif
 
+    Thread* thread_to_schedule = nullptr;
+
     Vector<Thread*, 128> sorted_runnables;
-    for_each_runnable([&sorted_runnables](auto& thread) {
+    for_each_runnable([&](auto& thread) {
         if ((thread.affinity() & (1u << Processor::current().id())) != 0)
             sorted_runnables.append(&thread);
+        if (&thread == scheduler_data.m_pending_beneficiary) {
+            thread_to_schedule = &thread;
+            return IterationDecision::Break;
+        }
         return IterationDecision::Continue;
     });
-    quick_sort(sorted_runnables, [](auto& a, auto& b) { return a->effective_priority() >= b->effective_priority(); });
 
-    Thread* thread_to_schedule = nullptr;
+    if (thread_to_schedule) {
+        // The thread we're supposed to donate to still exists
+        const char* reason = scheduler_data.m_pending_donate_reason;
+        scheduler_data.m_pending_beneficiary = nullptr;
+        scheduler_data.m_pending_donate_reason = nullptr;
+
+        // We need to leave our first critical section before switching context,
+        // but since we're still holding the scheduler lock we're still in a critical section
+        critical.leave();
+
+#ifdef SCHEDULER_DEBUG
+        dbg() << "Processing pending donate to " << *thread_to_schedule << " reason=" << reason;
+#endif
+        return donate_to_and_switch(thread_to_schedule, reason);
+    }
+
+    // Either we're not donating or the beneficiary disappeared.
+    // Either way clear any pending information
+    scheduler_data.m_pending_beneficiary = nullptr;
+    scheduler_data.m_pending_donate_reason = nullptr;
+
+    quick_sort(sorted_runnables, [](auto& a, auto& b) { return a->effective_priority() >= b->effective_priority(); });
 
     for (auto* thread : sorted_runnables) {
         if (thread->process().exec_tid() && thread->process().exec_tid() != thread->tid())
@@ -479,6 +551,11 @@ bool Scheduler::yield()
 {
     InterruptDisabler disabler;
     auto& proc = Processor::current();
+    auto& scheduler_data = proc.get_scheduler_data();
+
+    // Clear any pending beneficiary
+    scheduler_data.m_pending_beneficiary = nullptr;
+    scheduler_data.m_pending_donate_reason = nullptr;
 
     auto current_thread = Thread::current();
 #ifdef SCHEDULER_DEBUG
@@ -501,33 +578,12 @@ bool Scheduler::yield()
     return true;
 }
 
-bool Scheduler::donate_to(Thread* beneficiary, const char* reason)
+bool Scheduler::donate_to_and_switch(Thread* beneficiary, const char* reason)
 {
-    ASSERT(beneficiary);
+    ASSERT(g_scheduler_lock.own_lock());
 
-    // Set the m_in_scheduler flag before acquiring the spinlock. This
-    // prevents a recursive call into Scheduler::invoke_async upon
-    // leaving the scheduler lock.
-    ScopedCritical critical;
     auto& proc = Processor::current();
-    proc.get_scheduler_data().m_in_scheduler = true;
-    ScopeGuard guard(
-        []() {
-            // We may be on a different processor after we got switched
-            // back to this thread!
-            auto& scheduler_data = Processor::current().get_scheduler_data();
-            ASSERT(scheduler_data.m_in_scheduler);
-            scheduler_data.m_in_scheduler = false;
-        });
-
-    ScopedSpinLock lock(g_scheduler_lock);
-
-    ASSERT(!proc.in_irq());
-
-    if (proc.in_critical()) {
-        proc.invoke_scheduler_async();
-        return false;
-    }
+    ASSERT(proc.in_critical() == 1);
 
     (void)reason;
     unsigned ticks_left = Thread::current()->ticks_left();
@@ -539,7 +595,49 @@ bool Scheduler::donate_to(Thread* beneficiary, const char* reason)
     dbg() << "Scheduler[" << proc.id() << "]: Donating " << ticks_to_donate << " ticks to " << *beneficiary << ", reason=" << reason;
 #endif
     beneficiary->set_ticks_left(ticks_to_donate);
-    Scheduler::context_switch(beneficiary);
+
+    return Scheduler::context_switch(beneficiary);
+}
+
+bool Scheduler::donate_to(RefPtr<Thread>& beneficiary, const char* reason)
+{
+    ASSERT(beneficiary);
+
+    if (beneficiary == Thread::current())
+        return Scheduler::yield();
+
+    // Set the m_in_scheduler flag before acquiring the spinlock. This
+    // prevents a recursive call into Scheduler::invoke_async upon
+    // leaving the scheduler lock.
+    ScopedCritical critical;
+    auto& proc = Processor::current();
+    auto& scheduler_data = proc.get_scheduler_data();
+    scheduler_data.m_in_scheduler = true;
+    ScopeGuard guard(
+        []() {
+            // We may be on a different processor after we got switched
+            // back to this thread!
+            auto& scheduler_data = Processor::current().get_scheduler_data();
+            ASSERT(scheduler_data.m_in_scheduler);
+            scheduler_data.m_in_scheduler = false;
+        });
+
+    ASSERT(!proc.in_irq());
+
+    if (proc.in_critical() > 1) {
+        scheduler_data.m_pending_beneficiary = beneficiary->make_weak_ptr(); // Save the beneficiary
+        scheduler_data.m_pending_donate_reason = reason;
+        proc.invoke_scheduler_async();
+        return false;
+    }
+
+    ScopedSpinLock lock(g_scheduler_lock);
+
+    // "Leave" the critical section before switching context. Since we
+    // still hold the scheduler lock, we're not actually leaving it.
+    // Processor::switch_context expects Processor::in_critical() to be 1
+    critical.leave();
+    donate_to_and_switch(beneficiary, reason);
     return false;
 }
 
@@ -601,7 +699,7 @@ void Scheduler::enter_current(Thread& prev_thread)
 
 void Scheduler::leave_on_first_switch(u32 flags)
 {
-    // This is called when a thread is swiched into for the first time.
+    // This is called when a thread is switched into for the first time.
     // At this point, enter_current has already be called, but because
     // Scheduler::context_switch is not in the call stack we need to
     // clean up and release locks manually here
@@ -642,7 +740,7 @@ void Scheduler::initialize()
 {
     ASSERT(&Processor::current() != nullptr); // sanity check
 
-    Thread* idle_thread = nullptr;
+    RefPtr<Thread> idle_thread;
     g_scheduler_data = new SchedulerData;
     g_finalizer_wait_queue = new WaitQueue;
 
@@ -651,7 +749,7 @@ void Scheduler::initialize()
     ASSERT(s_colonel_process);
     ASSERT(idle_thread);
     idle_thread->set_priority(THREAD_PRIORITY_MIN);
-    idle_thread->set_name("idle thread #0");
+    idle_thread->set_name(StringView("idle thread #0"));
 
     set_idle_thread(idle_thread);
 }

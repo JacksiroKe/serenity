@@ -37,8 +37,13 @@ public:
         Undefined,
         Percentage,
         Auto,
+        Cm,
+        In,
+        Mm,
+        Q,
         Px,
         Pt,
+        Pc,
         Ex,
         Em,
         Rem,
@@ -88,7 +93,18 @@ public:
     bool is_undefined() const { return m_type == Type::Undefined; }
     bool is_percentage() const { return m_type == Type::Percentage; }
     bool is_auto() const { return m_type == Type::Auto; }
-    bool is_absolute() const { return m_type == Type::Px || m_type == Type::Pt; }
+
+    bool is_absolute() const
+    {
+        return m_type == Type::Cm
+            || m_type == Type::In
+            || m_type == Type::Mm
+            || m_type == Type::Px
+            || m_type == Type::Pt
+            || m_type == Type::Pc
+            || m_type == Type::Q;
+    }
+
     bool is_relative() const
     {
         return m_type == Type::Ex
@@ -105,13 +121,25 @@ public:
     {
         if (is_relative())
             return relative_length_to_px(layout_node);
+        constexpr float inch_pixels = 96.0f;
+        constexpr float centimeter_pixels = (inch_pixels / 2.54f);
         switch (m_type) {
         case Type::Auto:
             return 0;
+        case Type::Cm:
+            return m_value * centimeter_pixels; // 1cm = 96px/2.54
+        case Type::In:
+            return m_value * inch_pixels; // 1in = 2.54 cm = 96px
         case Type::Px:
-            return m_value;
+            return m_value; // 1px = 1/96th of 1in
         case Type::Pt:
-            return m_value * 1.33333333f;
+            return m_value * ((1.0f / 72.0f) * inch_pixels); // 1pt = 1/72th of 1in
+        case Type::Pc:
+            return m_value * ((1.0f / 6.0f) * inch_pixels); // 1pc = 1/6th of 1in
+        case Type::Mm:
+            return m_value * ((1.0f / 10.0f) * centimeter_pixels); // 1mm = 1/10th of 1cm
+        case Type::Q:
+            return m_value * ((1.0f / 40.0f) * centimeter_pixels); // 1Q = 1/40th of 1cm
         case Type::Undefined:
         case Type::Percentage:
         default:

@@ -28,6 +28,8 @@
 #include "RemoteObject.h"
 #include "RemoteProcess.h"
 
+namespace Inspector {
+
 RemoteObjectPropertyModel::RemoteObjectPropertyModel(RemoteObject& object)
     : m_object(object)
 {
@@ -75,9 +77,9 @@ GUI::Variant RemoteObjectPropertyModel::data(const GUI::ModelIndex& index, GUI::
         case Column::Value: {
             auto data = path->resolve(m_object.json);
             if (data.is_array())
-                return String::format("<Array with %d element%s", data.as_array().size(), data.as_array().size() == 1 ? ">" : "s>");
+                return String::formatted("<Array with {} element{}", data.as_array().size(), data.as_array().size() == 1 ? ">" : "s>");
             if (data.is_object())
-                return String::format("<Object with %d entrie%s", data.as_object().size(), data.as_object().size() == 1 ? ">" : "s>");
+                return String::formatted("<Object with {} entr{}", data.as_object().size(), data.as_object().size() == 1 ? "y>" : "ies>");
             return data;
         }
         }
@@ -187,7 +189,7 @@ GUI::ModelIndex RemoteObjectPropertyModel::parent_index(const GUI::ModelIndex& i
         return create_index(index_in_parent, 0, cpath);
     }
 
-    dbg() << "No cached path found for path " << path.to_string();
+    dbgln("No cached path found for path {}", path.to_string());
     return {};
 }
 
@@ -234,4 +236,6 @@ const JsonPath* RemoteObjectPropertyModel::find_cached_path(const Vector<JsonPat
     }
 
     return nullptr;
+}
+
 }

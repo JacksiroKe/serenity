@@ -24,6 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <AK/GenericLexer.h>
 #include <AK/HashMap.h>
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
@@ -34,13 +35,51 @@
 #include <LibCore/ArgsParser.h>
 #include <LibCore/File.h>
 #include <LibCore/ProcessStatisticsReader.h>
+#include <ctype.h>
 #include <stdio.h>
 
 struct OpenFile {
     int fd;
     int pid;
+    String type;
     String name;
+    String state;
+    String full_name;
 };
+
+static bool parse_name(StringView name, OpenFile& file)
+{
+    GenericLexer lexer(name);
+    auto component1 = lexer.consume_until(':');
+
+    if (lexer.tell_remaining() == 0) {
+        file.name = component1;
+        return true;
+    } else {
+        file.type = component1;
+        auto component2 = lexer.consume_while([](char c) { return isprint(c) && !isspace(c) && c != '('; });
+        lexer.ignore_while(isspace);
+        file.name = component2;
+
+        if (lexer.tell_remaining() == 0) {
+            return true;
+        } else {
+            if (!lexer.consume_specific('(')) {
+                dbg() << "parse_name: expected (";
+                return false;
+            }
+
+            auto component3 = lexer.consume_until(')');
+            if (lexer.tell_remaining() != 0) {
+                dbg() << "parse_name: expected EOF";
+                return false;
+            }
+
+            file.state = component3;
+            return true;
+        }
+    }
+}
 
 static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
 {
@@ -63,7 +102,11 @@ static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
         OpenFile open_file;
         open_file.pid = pid;
         open_file.fd = object.as_object().get("fd").to_int();
-        open_file.name = object.as_object().get("absolute_path").to_string();
+
+        String name = object.as_object().get("absolute_path").to_string();
+        ASSERT(parse_name(name, open_file));
+        open_file.full_name = name;
+
         files.append(open_file);
     });
     return files;
@@ -71,7 +114,7 @@ static Vector<OpenFile> get_open_files_by_pid(pid_t pid)
 
 static void display_entry(const OpenFile& file, const Core::ProcessStatistics& statistics)
 {
-    printf("%-28s %4d %4d %-10s %4d %s\n", statistics.name.characters(), file.pid, statistics.pgid, statistics.username.characters(), file.fd, file.name.characters());
+    printf("%-28s %4d %4d %-10s %4d %s\n", statistics.name.characters(), file.pid, statistics.pgid, statistics.username.characters(), file.fd, file.full_name.characters());
 }
 
 int main(int argc, char* argv[])
@@ -100,15 +143,17 @@ int main(int argc, char* argv[])
     int arg_uid_int = -1;
     int arg_pgid { -1 };
     pid_t arg_pid { -1 };
+    const char* arg_file_name { nullptr };
 
     Core::ArgsParser parser;
     if (argc == 1)
         arg_all_processes = true;
     else {
-        parser.add_option(arg_pid, "Select PID", nullptr, 'p', "pid");
-        parser.add_option(arg_fd, "Select file descriptor", nullptr, 'd', "fd");
-        parser.add_option(arg_uid, "Select login/UID", nullptr, 'u', "login/UID");
-        parser.add_option(arg_pgid, "Select process group ID", nullptr, 'g', "PGID");
+        parser.add_option(arg_pid, "Select by PID", nullptr, 'p', "pid");
+        parser.add_option(arg_fd, "Select by file descriptor", nullptr, 'd', "fd");
+        parser.add_option(arg_uid, "Select by login/UID", nullptr, 'u', "login/UID");
+        parser.add_option(arg_pgid, "Select by process group ID", nullptr, 'g', "PGID");
+        parser.add_positional_argument(arg_file_name, "File name", "file name", Core::ArgsParser::Required::No);
         parser.parse(argc, argv);
     }
     {
@@ -134,7 +179,8 @@ int main(int argc, char* argv[])
                     || (arg_fd != -1 && file.fd == arg_fd)
                     || (arg_uid_int != -1 && (int)process.value.uid == arg_uid_int)
                     || (arg_uid != nullptr && process.value.username == arg_uid)
-                    || (arg_pgid != -1 && (int)process.value.pgid == arg_pgid))
+                    || (arg_pgid != -1 && (int)process.value.pgid == arg_pgid)
+                    || (arg_file_name != nullptr && file.name == arg_file_name))
                     display_entry(file, process.value);
             }
         }

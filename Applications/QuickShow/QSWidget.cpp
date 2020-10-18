@@ -98,14 +98,14 @@ void QSWidget::navigate(Directions direction)
     size_t index = current_index.value();
     if (direction == Directions::Back) {
         if (index == 0) {
-            GUI::MessageBox::show(window(), String::format("This is the first file.", index), "Cannot open image", GUI::MessageBox::Type::Error);
+            GUI::MessageBox::show(window(), "This is the first file.", "Cannot open image", GUI::MessageBox::Type::Error);
             return;
         }
 
         index--;
     } else if (direction == Directions::Forward) {
         if (index == m_files_in_same_dir.size() - 1) {
-            GUI::MessageBox::show(window(), String::format("This is the last file.", index), "Cannot open image", GUI::MessageBox::Type::Error);
+            GUI::MessageBox::show(window(), "This is the last file.", "Cannot open image", GUI::MessageBox::Type::Error);
             return;
         }
 
@@ -186,7 +186,7 @@ void QSWidget::paint_event(GUI::PaintEvent& event)
     painter.add_clip_rect(event.rect());
     painter.add_clip_rect(frame_inner_rect());
 
-    painter.fill_rect_with_checkerboard(frame_inner_rect(), { 8, 8 }, palette().base().darkened(0.9), palette().base());
+    Gfx::StylePainter::paint_transparency_grid(painter, frame_inner_rect(), palette());
 
     if (!m_bitmap.is_null())
         painter.draw_scaled_bitmap(m_bitmap_rect, *m_bitmap, m_bitmap->rect());
@@ -249,7 +249,7 @@ void QSWidget::load_from_file(const String& path)
 {
     auto bitmap = Gfx::Bitmap::load_from_file(path);
     if (!bitmap) {
-        GUI::MessageBox::show(window(), String::format("Failed to open %s", path.characters()), "Cannot open image", GUI::MessageBox::Type::Error);
+        GUI::MessageBox::show(window(), String::formatted("Failed to open {}", path), "Cannot open image", GUI::MessageBox::Type::Error);
         return;
     }
 

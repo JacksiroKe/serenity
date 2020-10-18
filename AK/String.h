@@ -26,10 +26,10 @@
 
 #pragma once
 
+#include <AK/Format.h>
 #include <AK/Forward.h>
 #include <AK/RefPtr.h>
 #include <AK/Stream.h>
-#include <AK/StringBuilder.h>
 #include <AK/StringImpl.h>
 #include <AK/StringUtils.h>
 #include <AK/Traits.h>
@@ -119,12 +119,12 @@ public:
     String to_lowercase() const;
     String to_uppercase() const;
 
-    enum class TrimMode {
-        Left,
-        Right,
-        Both
-    };
-    String trim_whitespace(TrimMode mode = TrimMode::Both) const;
+#ifndef KERNEL
+    String trim_whitespace(TrimMode mode = TrimMode::Both) const
+    {
+        return StringUtils::trim_whitespace(StringView { characters(), length() }, mode);
+    }
+#endif
 
     bool equals_ignoring_case(const StringView&) const;
 
@@ -238,16 +238,21 @@ public:
     }
 
     static String format(const char*, ...);
-    static String number(unsigned);
-    static String number(unsigned long);
-    static String number(unsigned long long);
-    static String number(int);
-    static String number(long);
-    static String number(long long);
+
+    static String vformatted(StringView fmtstr, TypeErasedFormatParams);
+
+    template<typename... Parameters>
+    static String formatted(StringView fmtstr, const Parameters&... parameters)
+    {
+        return vformatted(fmtstr, VariadicFormatParams { parameters... });
+    }
+
+    template<typename T>
+    static String number(T);
 
     StringView view() const;
 
-    int replace(const String& needle, const String& replacement, bool all_occurences = false);
+    int replace(const String& needle, const String& replacement, bool all_occurrences = false);
 
     template<typename T, typename... Rest>
     bool is_one_of(const T& string, Rest... rest) const
@@ -280,29 +285,7 @@ bool operator<=(const char*, const String&);
 
 String escape_html_entities(const StringView& html);
 
-inline InputStream& operator>>(InputStream& stream, String& string)
-{
-    StringBuilder builder;
-
-    for (;;) {
-        if (stream.eof()) {
-            string = nullptr;
-
-            stream.set_fatal_error();
-            return stream;
-        }
-
-        char next_char;
-        stream >> next_char;
-
-        if (next_char) {
-            builder.append(next_char);
-        } else {
-            string = builder.to_string();
-            return stream;
-        }
-    }
-}
+InputStream& operator>>(InputStream& stream, String& string);
 
 }
 

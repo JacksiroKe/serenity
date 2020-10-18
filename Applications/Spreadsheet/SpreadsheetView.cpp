@@ -140,6 +140,7 @@ SpreadsheetView::SpreadsheetView(Sheet& sheet)
                 auto& cell = m_sheet->ensure(position);
                 cell.set_type(dialog->type());
                 cell.set_type_metadata(dialog->metadata());
+                cell.set_conditional_formats(dialog->conditional_formats());
             }
 
             m_table_view->update();
@@ -170,6 +171,9 @@ void SpreadsheetView::TableCellPainter::paint(GUI::Painter& painter, const Gfx::
     // Draw a border.
     // Undo the horizontal padding done by the table view...
     auto cell_rect = rect.inflated(m_table_view.horizontal_padding() * 2, 0);
+
+    if (auto bg = index.data(GUI::ModelRole::BackgroundColor); bg.is_color())
+        painter.fill_rect(cell_rect, bg.as_color());
 
     if (m_table_view.selection().contains(index)) {
         Color fill_color = palette.selection();

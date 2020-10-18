@@ -25,6 +25,7 @@
  */
 
 #include <AK/ScopeGuard.h>
+#include <AK/TemporaryChange.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/Process.h>
@@ -104,8 +105,8 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
     InodeMetadata loader_metadata;
 
     // FIXME: Hoooo boy this is a hack if I ever saw one.
-    //      This is the 'random' offset we're giving to our ET_DYN exectuables to start as.
-    //      It also happens to be the static Virtual Addresss offset every static exectuable gets :)
+    //      This is the 'random' offset we're giving to our ET_DYN executables to start as.
+    //      It also happens to be the static Virtual Address offset every static executable gets :)
     //      Without this, some assumptions by the ELF loading hooks below are severely broken.
     //      0x08000000 is a verified random number chosen by random dice roll https://xkcd.com/221/
     m_load_offset = interpreter_description ? 0x08000000 : 0;
@@ -113,7 +114,7 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
     // FIXME: We should be able to load both the PT_INTERP interpreter and the main program... once the RTLD is smart enough
     if (interpreter_description) {
         loader_metadata = interpreter_description->metadata();
-        // we don't need the interpreter file desciption after we've loaded (or not) it into memory
+        // we don't need the interpreter file description after we've loaded (or not) it into memory
         interpreter_description = nullptr;
     } else {
         loader_metadata = main_program_description->metadata();
@@ -176,10 +177,10 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
 
         // FIXME: Move TLS region allocation to userspace: LibC and the dynamic loader.
         //     LibC if we end up with a statically linked executable, and the
-        //     dynamic loader so that it can create new TLS blocks for each shared libarary
+        //     dynamic loader so that it can create new TLS blocks for each shared library
         //     that gets loaded as part of DT_NEEDED processing, and via dlopen()
         //     If that doesn't happen quickly, at least pass the location of the TLS region
-        //     some ELF Auxilliary Vector so the loader can use it/create new ones as necessary.
+        //     some ELF Auxiliary Vector so the loader can use it/create new ones as necessary.
         loader->tls_section_hook = [&](size_t size, size_t alignment) {
             ASSERT(size);
             master_tls_region = allocate_region({}, size, String(), PROT_READ | PROT_WRITE);
@@ -195,7 +196,7 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
         }
         // FIXME: Validate that this virtual address is within executable region,
         //     instead of just non-null. You could totally have a DSO with entry point of
-        //     the beginning of the text segement.
+        //     the beginning of the text segment.
         if (!loader->entry().offset(m_load_offset).get()) {
             klog() << "do_exec: Failure loading " << path.characters() << ", entry pointer is invalid! (" << loader->entry().offset(m_load_offset) << ")";
             return -ENOEXEC;
@@ -245,11 +246,8 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
 
     for (size_t i = 0; i < m_fds.size(); ++i) {
         auto& description_and_flags = m_fds[i];
-        if (description_and_flags.description() && description_and_flags.flags() & FD_CLOEXEC) {
-            // FIXME: Should this error path be observed somehow?
-            (void)description_and_flags.description()->close();
+        if (description_and_flags.description() && description_and_flags.flags() & FD_CLOEXEC)
             description_and_flags = {};
-        }
     }
 
     new_main_thread = nullptr;
@@ -267,7 +265,10 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
 
     // NOTE: We create the new stack before disabling interrupts since it will zero-fault
     //       and we don't want to deal with faults after this point.
-    u32 new_userspace_esp = new_main_thread->make_userspace_stack_for_main_thread(move(arguments), move(environment), move(auxv));
+    auto make_stack_result = new_main_thread->make_userspace_stack_for_main_thread(move(arguments), move(environment), move(auxv));
+    if (make_stack_result.is_error())
+        return make_stack_result.error();
+    u32 new_userspace_esp = make_stack_result.value();
 
     if (wait_for_tracer_at_next_execve())
         Thread::current()->send_urgent_signal_to_self(SIGSTOP);
@@ -287,7 +288,9 @@ int Process::do_exec(NonnullRefPtr<FileDescription> main_program_description, Ve
 
     // FIXME: PID/TID ISSUE
     m_pid = new_main_thread->tid().value();
-    new_main_thread->make_thread_specific_region({});
+    auto tsr_result = new_main_thread->make_thread_specific_region({});
+    if (tsr_result.is_error())
+        return tsr_result.error();
     new_main_thread->reset_fpu_state();
 
     auto& tss = new_main_thread->m_tss;
@@ -423,7 +426,8 @@ KResultOr<NonnullRefPtr<FileDescription>> Process::find_elf_interpreter_for_exec
             return KResult(-ENOEXEC);
 
         memset(first_page, 0, sizeof(first_page));
-        auto nread_or_error = interpreter_description->read((u8*)&first_page, sizeof(first_page));
+        auto first_page_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&first_page);
+        auto nread_or_error = interpreter_description->read(first_page_buffer, sizeof(first_page));
         if (nread_or_error.is_error())
             return KResult(-ENOEXEC);
         nread = nread_or_error.value();
@@ -490,7 +494,8 @@ int Process::exec(String path, Vector<String> arguments, Vector<String> environm
 
     // Read the first page of the program into memory so we can validate the binfmt of it
     char first_page[PAGE_SIZE];
-    auto nread_or_error = description->read((u8*)&first_page, sizeof(first_page));
+    auto first_page_buffer = UserOrKernelBuffer::for_kernel_buffer((u8*)&first_page);
+    auto nread_or_error = description->read(first_page_buffer, sizeof(first_page));
     if (nread_or_error.is_error())
         return -ENOEXEC;
 
@@ -554,7 +559,7 @@ int Process::sys$execve(Userspace<const Syscall::SC_execve_params*> user_params)
     // NOTE: Be extremely careful with allocating any kernel memory in exec().
     //       On success, the kernel stack will be lost.
     Syscall::SC_execve_params params;
-    if (!validate_read_and_copy_typed(&params, user_params))
+    if (!copy_from_user(&params, user_params))
         return -EFAULT;
 
     if (params.arguments.length > ARG_MAX || params.environment.length > ARG_MAX)
@@ -571,16 +576,19 @@ int Process::sys$execve(Userspace<const Syscall::SC_execve_params*> user_params)
         path = path_arg.value();
     }
 
-    auto copy_user_strings = [this](const auto& list, auto& output) {
+    auto copy_user_strings = [](const auto& list, auto& output) {
         if (!list.length)
             return true;
-        if (!validate_read_typed(list.strings, list.length))
+        Checked size = sizeof(list.length);
+        size *= list.length;
+        if (size.has_overflow())
             return false;
         Vector<Syscall::StringArgument, 32> strings;
         strings.resize(list.length);
-        copy_from_user(strings.data(), list.strings.unsafe_userspace_ptr(), list.length * sizeof(Syscall::StringArgument));
+        if (!copy_from_user(strings.data(), list.strings, list.length * sizeof(Syscall::StringArgument)))
+            return false;
         for (size_t i = 0; i < list.length; ++i) {
-            auto string = validate_and_copy_string_from_user(strings[i]);
+            auto string = copy_string_from_user(strings[i]);
             if (string.is_null())
                 return false;
             output.append(move(string));

@@ -32,7 +32,8 @@
 #include <LibGUI/Menu.h>
 #include <LibGUI/MenuBar.h>
 #include <LibGUI/Window.h>
-#include <LibWeb/InProcessWebView.h>
+#include <LibGfx/Bitmap.h>
+#include <LibWeb/OutOfProcessWebView.h>
 #include <stdio.h>
 
 int main(int argc, char** argv)
@@ -40,10 +41,12 @@ int main(int argc, char** argv)
     auto app = GUI::Application::construct(argc, argv);
 
     auto f = Core::File::construct();
+    URL url;
     bool success;
     if (argc < 2) {
         success = f->open(STDIN_FILENO, Core::IODevice::OpenMode::ReadOnly, Core::File::ShouldCloseFileDescription::No);
     } else {
+        url = URL::create_with_file_protocol(argv[1]);
         f->set_filename(argv[1]);
         success = f->open(Core::IODevice::OpenMode::ReadOnly);
     }
@@ -55,12 +58,12 @@ int main(int argc, char** argv)
     auto html = f->read_all();
 
     auto window = GUI::Window::construct();
-    auto& widget = window->set_main_widget<Web::InProcessWebView>();
-    widget.load_html(html, URL());
-    if (!widget.document()->title().is_null())
-        window->set_title(String::format("%s - HTML", widget.document()->title().characters()));
-    else
-        window->set_title("HTML");
+    window->set_title("HTML");
+    auto& widget = window->set_main_widget<Web::OutOfProcessWebView>();
+    widget.on_title_change = [&](auto& title) {
+        window->set_title(String::formatted("{} - HTML", title));
+    };
+    widget.load_html(html, url);
     window->show();
 
     auto menubar = GUI::MenuBar::construct();

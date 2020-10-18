@@ -32,10 +32,10 @@
 namespace IPC {
 
 template<typename T>
-bool encode(BufferStream&, T&)
+bool encode(Encoder&, T&)
 {
+    static_assert(DependentFalse<T>, "Base IPC::encode() was instantiated");
     ASSERT_NOT_REACHED();
-    return false;
 }
 
 class Encoder {

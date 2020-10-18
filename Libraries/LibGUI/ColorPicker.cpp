@@ -68,12 +68,13 @@ public:
     Function<void(Color)> on_pick;
     void set_color(Color);
     void set_hue(double);
+    void set_hue_from_pick(double);
 
 private:
     ColorField(Color color);
 
     Color m_color;
-    // save hue seperately so full white color doesn't reset it to 0
+    // save hue separately so full white color doesn't reset it to 0
     double m_hue;
 
     RefPtr<Gfx::Bitmap> m_color_bitmap;
@@ -117,6 +118,19 @@ private:
     virtual void resize_event(ResizeEvent&) override;
 };
 
+class ColorPreview final : public GUI::Widget {
+    C_OBJECT(ColorPreview);
+
+public:
+    void set_color(Color);
+
+private:
+    ColorPreview(Color);
+
+    Color m_color;
+    virtual void paint_event(GUI::PaintEvent&) override;
+};
+
 class CustomColorWidget final : public GUI::Widget {
     C_OBJECT(CustomColorWidget);
 
@@ -126,7 +140,6 @@ public:
 
 private:
     CustomColorWidget(Color);
-
 
     RefPtr<ColorField> m_color_field;
     RefPtr<ColorSlider> m_color_slider;
@@ -146,6 +159,15 @@ ColorPicker::ColorPicker(Color color, Window* parent_window, String title)
 
 ColorPicker::~ColorPicker()
 {
+}
+
+void ColorPicker::set_color_has_alpha_channel(bool has_alpha)
+{
+    if (m_color_has_alpha_channel == has_alpha)
+        return;
+
+    m_color_has_alpha_channel = has_alpha;
+    update_color_widgets();
 }
 
 void ColorPicker::build_ui()
@@ -257,20 +279,10 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     preview_container.set_preferred_size(0, 128);
 
     // Current color
-    auto& current_color_widget = preview_container.add<Widget>();
-    current_color_widget.set_fill_with_background_color(true);
-
-    auto pal1 = current_color_widget.palette();
-    pal1.set_color(ColorRole::Background, m_color);
-    current_color_widget.set_palette(pal1);
+    preview_container.add<ColorPreview>(m_color);
 
     // Preview selected color
-    m_preview_widget = preview_container.add<Widget>();
-    m_preview_widget->set_fill_with_background_color(true);
-
-    auto pal2 = m_preview_widget->palette();
-    pal2.set_color(ColorRole::Background, m_color);
-    m_preview_widget->set_palette(pal2);
+    m_preview_widget = preview_container.add<ColorPreview>(m_color);
 
     vertical_container.layout()->add_spacer();
 
@@ -292,7 +304,9 @@ void ColorPicker::build_ui_custom(Widget& root_container)
     m_html_text->on_change = [this]() {
         auto color_name = m_html_text->text();
         auto optional_color = Color::from_string(color_name);
-        if (optional_color.has_value()) {
+        if (optional_color.has_value() && (!color_name.starts_with("#") || color_name.length() == ((m_color_has_alpha_channel) ? 9 : 7))) {
+            // The color length must be 9/7 (unless it is a name like red), because:
+            //    - If we allowed 5/4 character rgb color, the field would reset to 9/7 characters after you deleted 4/3 characters.
             auto color = optional_color.value();
             if (m_color == color)
                 return;
@@ -365,10 +379,7 @@ void ColorPicker::build_ui_custom(Widget& root_container)
 
 void ColorPicker::update_color_widgets()
 {
-    auto pal = m_preview_widget->palette();
-    pal.set_color(ColorRole::Background, m_color);
-    m_preview_widget->set_palette(pal);
-    m_preview_widget->update();
+    m_preview_widget->set_color(m_color);
 
     m_html_text->set_text(m_color_has_alpha_channel ? m_color.to_string() : m_color.to_string_without_alpha());
 
@@ -432,12 +443,12 @@ void ColorButton::paint_event(PaintEvent& event)
 
     Gfx::StylePainter::paint_button(painter, rect(), palette(), Gfx::ButtonStyle::Normal, is_being_pressed(), is_hovered(), is_checked(), is_enabled());
 
-    painter.fill_rect({ 1, 1, rect().width() - 2, rect().height() - 2 }, m_color);
+    painter.fill_rect(rect().shrunken(2, 2), m_color);
 
     if (m_selected) {
-        painter.fill_rect({ 3, 3, rect().width() - 6, rect().height() - 6 }, Color::Black);
-        painter.fill_rect({ 5, 5, rect().width() - 10, rect().height() - 10 }, Color::White);
-        painter.fill_rect({ 7, 6, rect().width() - 14, rect().height() - 14 }, m_color);
+        painter.fill_rect(rect().shrunken(6, 6), Color::Black);
+        painter.fill_rect(rect().shrunken(10, 10), Color::White);
+        painter.fill_rect(rect().shrunken(14, 14), m_color);
     }
 }
 
@@ -467,7 +478,7 @@ CustomColorWidget::CustomColorWidget(Color color)
     auto slider_width = 24 + (m_color_slider->frame_thickness() * 2);
     m_color_slider->set_preferred_size(slider_width, size);
     m_color_slider->on_pick = [this](double value) {
-        m_color_field->set_hue(value);
+        m_color_field->set_hue_from_pick(value);
     };
 }
 
@@ -507,7 +518,7 @@ void ColorField::set_color(Color color)
         return;
 
     m_color = color;
-    // don't save m_hue here by default, we dont want to set it to 0 in case color is full white
+    // don't save m_hue here by default, we don't want to set it to 0 in case color is full white
     // m_hue = color.to_hsv().hue;
 
     recalculate_position();
@@ -536,9 +547,13 @@ void ColorField::set_hue(double hue)
     auto color = Color::from_hsv(hsv);
     color.set_alpha(m_color.alpha());
     set_color(color);
+}
 
+void ColorField::set_hue_from_pick(double hue)
+{
+    set_hue(hue);
     if (on_pick)
-        on_pick(color);
+        on_pick(m_color);
 }
 
 void ColorField::pick_color_at_position(GUI::MouseEvent& event)
@@ -694,6 +709,34 @@ void ColorSlider::paint_event(GUI::PaintEvent& event)
 void ColorSlider::resize_event(ResizeEvent&)
 {
     recalculate_position();
+}
+
+ColorPreview::ColorPreview(Color color)
+    : m_color(color)
+{
+}
+
+void ColorPreview::set_color(Color color)
+{
+    if (m_color == color)
+        return;
+
+    m_color = color;
+    update();
+}
+
+void ColorPreview::paint_event(PaintEvent& event)
+{
+    Painter painter(*this);
+    painter.add_clip_rect(event.rect());
+
+    if (m_color.alpha() < 255) {
+        Gfx::StylePainter::paint_transparency_grid(painter, rect(), palette());
+        painter.fill_rect(rect(), m_color);
+        painter.fill_rect({ 0, 0, rect().width() / 4, rect().height() }, m_color.with_alpha(255));
+    } else {
+        painter.fill_rect(rect(), m_color);
+    }
 }
 
 }

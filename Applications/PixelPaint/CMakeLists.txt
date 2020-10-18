@@ -1,14 +1,9 @@
 set(SOURCES
+    BrushTool.cpp
     BucketTool.cpp
     CreateNewLayerDialog.cpp
     EllipseTool.cpp
     EraseTool.cpp
-    Filters/BoxBlurFilter.cpp
-    Filters/Filter.cpp
-    Filters/GenericConvolutionFilter.cpp
-    Filters/LaplacianFilter.cpp
-    Filters/SharpenFilter.cpp
-    Filters/SpatialGaussianBlurFilter.cpp
     Image.cpp
     ImageEditor.cpp
     Layer.cpp
@@ -23,6 +18,7 @@ set(SOURCES
     RectangleTool.cpp
     SprayTool.cpp
     ToolboxWidget.cpp
+    ToolPropertiesWidget.cpp
     Tool.cpp
 )
 

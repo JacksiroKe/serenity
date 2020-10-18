@@ -27,7 +27,6 @@
 #include <AK/Function.h>
 #include <AK/String.h>
 #include <LibJS/Heap/Heap.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/ObjectPrototype.h>
 #include <LibJS/Runtime/Value.h>
@@ -41,14 +40,15 @@ ObjectPrototype::ObjectPrototype(GlobalObject& global_object)
 
 void ObjectPrototype::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     Object::initialize(global_object);
     // This must be called after the constructor has returned, so that the below code
     // can find the ObjectPrototype through normal paths.
     u8 attr = Attribute::Writable | Attribute::Configurable;
-    define_native_function("hasOwnProperty", has_own_property, 1, attr);
-    define_native_function("toString", to_string, 0, attr);
-    define_native_function("toLocaleString", to_locale_string, 0, attr);
-    define_native_function("valueOf", value_of, 0, attr);
+    define_native_function(vm.names.hasOwnProperty, has_own_property, 1, attr);
+    define_native_function(vm.names.toString, to_string, 0, attr);
+    define_native_function(vm.names.toLocaleString, to_locale_string, 0, attr);
+    define_native_function(vm.names.valueOf, value_of, 0, attr);
 }
 
 ObjectPrototype::~ObjectPrototype()
@@ -57,31 +57,31 @@ ObjectPrototype::~ObjectPrototype()
 
 JS_DEFINE_NATIVE_FUNCTION(ObjectPrototype::has_own_property)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
-    auto name = interpreter.argument(0).to_string(interpreter);
-    if (interpreter.exception())
+    auto name = vm.argument(0).to_string(global_object);
+    if (vm.exception())
         return {};
     return Value(this_object->has_own_property(name));
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ObjectPrototype::to_string)
 {
-    auto this_value = interpreter.this_value(global_object);
+    auto this_value = vm.this_value(global_object);
 
     if (this_value.is_undefined())
-        return js_string(interpreter, "[object Undefined]");
+        return js_string(vm, "[object Undefined]");
     if (this_value.is_null())
-        return js_string(interpreter, "[object Null]");
+        return js_string(vm, "[object Null]");
 
-    auto* this_object = this_value.to_object(interpreter, global_object);
+    auto* this_object = this_value.to_object(global_object);
     if (!this_object)
         return {};
 
     String tag;
-    auto to_string_tag = this_object->get(global_object.interpreter().well_known_symbol_to_string_tag());
-    
+    auto to_string_tag = this_object->get(global_object.vm().well_known_symbol_to_string_tag());
+
     if (to_string_tag.is_string()) {
         tag = to_string_tag.as_string().string();
     } else if (this_object->is_array()) {
@@ -104,12 +104,12 @@ JS_DEFINE_NATIVE_FUNCTION(ObjectPrototype::to_string)
         tag = "Object";
     }
 
-    return js_string(interpreter, String::format("[object %s]", tag.characters()));
+    return js_string(vm, String::formatted("[object {}]", tag));
 }
 
 JS_DEFINE_NATIVE_FUNCTION(ObjectPrototype::to_locale_string)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     return this_object->invoke("toString");
@@ -117,7 +117,7 @@ JS_DEFINE_NATIVE_FUNCTION(ObjectPrototype::to_locale_string)
 
 JS_DEFINE_NATIVE_FUNCTION(ObjectPrototype::value_of)
 {
-    auto* this_object = interpreter.this_value(global_object).to_object(interpreter, global_object);
+    auto* this_object = vm.this_value(global_object).to_object(global_object);
     if (!this_object)
         return {};
     return this_object->value_of();

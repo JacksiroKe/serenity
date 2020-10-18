@@ -27,7 +27,9 @@
 #pragma once
 
 #include <AK/ByteBuffer.h>
+#include <AK/Format.h>
 #include <AK/Forward.h>
+#include <AK/StringView.h>
 #include <stdarg.h>
 
 namespace AK {
@@ -37,7 +39,7 @@ public:
     using OutputType = String;
 
     explicit StringBuilder(size_t initial_capacity = 16);
-    ~StringBuilder() {}
+    ~StringBuilder() { }
 
     void append(const StringView&);
     void append(const Utf32View&);
@@ -46,6 +48,12 @@ public:
     void append(const char*, size_t);
     void appendf(const char*, ...);
     void appendvf(const char*, va_list);
+
+    template<typename... Parameters>
+    void appendff(StringView fmtstr, const Parameters&... parameters)
+    {
+        vformat(*this, fmtstr, VariadicFormatParams { parameters... });
+    }
 
     String build() const;
     String to_string() const;

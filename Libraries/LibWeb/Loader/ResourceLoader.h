@@ -44,6 +44,7 @@ public:
 
     RefPtr<Resource> load_resource(Resource::Type, const LoadRequest&);
 
+    void load(const LoadRequest&, Function<void(const ByteBuffer&, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers)> success_callback, Function<void(const String&)> error_callback = nullptr);
     void load(const URL&, Function<void(const ByteBuffer&, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers)> success_callback, Function<void(const String&)> error_callback = nullptr);
     void load_sync(const URL&, Function<void(const ByteBuffer&, const HashMap<String, String, CaseInsensitiveStringTraits>& response_headers)> success_callback, Function<void(const String&)> error_callback = nullptr);
 
@@ -58,8 +59,6 @@ public:
 private:
     ResourceLoader();
     static bool is_port_blocked(int port);
-
-    virtual void save_to(JsonObject&) override;
 
     int m_pending_loads { 0 };
 

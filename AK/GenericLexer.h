@@ -26,7 +26,6 @@
 
 #pragma once
 
-#include <AK/Function.h>
 #include <AK/StringView.h>
 
 namespace AK {
@@ -36,10 +35,10 @@ public:
     explicit GenericLexer(const StringView& input);
     virtual ~GenericLexer();
 
-    using Condition = Function<bool(char)>;
-
     size_t tell() const { return m_index; }
     size_t tell_remaining() const { return m_input.length() - m_index; }
+
+    StringView remaining() const { return m_input.substring_view(m_index); }
 
     bool is_eof() const;
 
@@ -48,7 +47,6 @@ public:
     bool next_is(char) const;
     bool next_is(StringView) const;
     bool next_is(const char*) const;
-    bool next_is(Condition) const;
 
     char consume();
     bool consume_specific(char);
@@ -57,18 +55,75 @@ public:
     StringView consume(size_t count);
     StringView consume_all();
     StringView consume_line();
-    StringView consume_while(Condition);
     StringView consume_until(char);
     StringView consume_until(const char*);
-    StringView consume_until(Condition);
-    // FIXME: provide an escape character
-    StringView consume_quoted_string();
+    StringView consume_quoted_string(char escape_char = 0);
+    String consume_and_unescape_string(char escape_char = '\\');
 
     void ignore(size_t count = 1);
-    void ignore_while(Condition);
     void ignore_until(char);
     void ignore_until(const char*);
-    void ignore_until(Condition);
+
+    /*
+     * Conditions are used to match arbitrary characters. You can use lambdas,
+     * ctype functions, or is_any_of() and its derivatives (see below).
+     * A few examples:
+     *   - `if (lexer.next_is(isdigit))`
+     *   - `auto name = lexer.consume_while([](char c) { return isalnum(c) || c == '_'; });`
+     *   - `lexer.ignore_until(is_any_of("<^>"));`
+     */
+
+    // Test the next character against a Condition
+    template<typename C>
+    bool next_is(C condition) const
+    {
+        return condition(peek());
+    }
+
+    // Consume and return characters while `condition` returns true
+    template<typename C>
+    StringView consume_while(C condition)
+    {
+        size_t start = m_index;
+        while (!is_eof() && condition(peek()))
+            m_index++;
+        size_t length = m_index - start;
+
+        if (length == 0)
+            return {};
+        return m_input.substring_view(start, length);
+    }
+
+    // Consume and return characters until `condition` return true
+    template<typename C>
+    StringView consume_until(C condition)
+    {
+        size_t start = m_index;
+        while (!is_eof() && !condition(peek()))
+            m_index++;
+        size_t length = m_index - start;
+
+        if (length == 0)
+            return {};
+        return m_input.substring_view(start, length);
+    }
+
+    // Ignore characters while `condition` returns true
+    template<typename C>
+    void ignore_while(C condition)
+    {
+        while (!is_eof() && condition(peek()))
+            m_index++;
+    }
+
+    // Ignore characters until `condition` return true
+    // We don't skip the stop character as it may not be a unique value
+    template<typename C>
+    void ignore_until(C condition)
+    {
+        while (!is_eof() && !condition(peek()))
+            m_index++;
+    }
 
 protected:
     StringView m_input;
@@ -80,37 +135,12 @@ constexpr auto is_any_of(const StringView& values)
     return [values](auto c) { return values.contains(c); };
 }
 
-// ctype adaptors
-// FIXME: maybe put them in an another file?
-bool is_alpha(char);
-bool is_alphanum(char);
-bool is_control(char);
-bool is_digit(char);
-bool is_graphic(char);
-bool is_hex_digit(char);
-bool is_lowercase(char);
-bool is_path_separator(char);
-bool is_printable(char);
-bool is_punctuation(char);
-bool is_quote(char);
-bool is_uppercase(char);
-bool is_whitespace(char);
+constexpr auto is_path_separator = is_any_of("/\\");
+constexpr auto is_quote = is_any_of("'\"");
 
 }
 
 using AK::GenericLexer;
-
-using AK::is_alpha;
-using AK::is_alphanum;
 using AK::is_any_of;
-using AK::is_control;
-using AK::is_digit;
-using AK::is_graphic;
-using AK::is_hex_digit;
-using AK::is_lowercase;
 using AK::is_path_separator;
-using AK::is_printable;
-using AK::is_punctuation;
 using AK::is_quote;
-using AK::is_uppercase;
-using AK::is_whitespace;

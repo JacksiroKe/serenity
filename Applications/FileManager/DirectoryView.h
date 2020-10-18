@@ -37,6 +37,8 @@
 #include <LibGUI/TableView.h>
 #include <sys/stat.h>
 
+namespace FileManager {
+
 class LauncherHandler : public RefCounted<LauncherHandler> {
 public:
     LauncherHandler(const NonnullRefPtr<Desktop::Launcher::Details>& details)
@@ -82,10 +84,8 @@ public:
     Function<void(const StringView& path, bool can_write_in_path)> on_path_change;
     Function<void(GUI::AbstractView&)> on_selection_change;
     Function<void(const GUI::ModelIndex&, const GUI::ContextMenuEvent&)> on_context_menu_request;
-    Function<void(const GUI::ModelIndex&, const GUI::DropEvent&)> on_drop;
     Function<void(const StringView&)> on_status_message;
     Function<void(int done, int total)> on_thumbnail_progress;
-    Function<void(int error, const char* error_string, bool quit)> on_error;
 
     enum ViewMode {
         Invalid,
@@ -136,11 +136,19 @@ public:
 
     GUI::Action& mkdir_action() { return *m_mkdir_action; }
     GUI::Action& touch_action() { return *m_touch_action; }
+    GUI::Action& open_terminal_action() { return *m_open_terminal_action; }
+    GUI::Action& delete_action() { return *m_delete_action; }
+    GUI::Action& force_delete_action() { return *m_force_delete_action; }
 
 private:
     explicit DirectoryView(Mode);
+
     const GUI::FileSystemModel& model() const { return *m_model; }
     GUI::FileSystemModel& model() { return *m_model; }
+
+    void handle_selection_change();
+    void handle_drop(const GUI::ModelIndex&, const GUI::DropEvent&);
+    void do_delete(bool should_confirm);
 
     // ^GUI::ModelClient
     virtual void model_did_update(unsigned) override;
@@ -165,10 +173,17 @@ private:
     Vector<String> m_path_history;
     void add_path_to_history(const StringView& path);
 
+    RefPtr<GUI::Label> m_error_label;
+
     RefPtr<GUI::TableView> m_table_view;
     RefPtr<GUI::IconView> m_icon_view;
     RefPtr<GUI::ColumnsView> m_columns_view;
 
     RefPtr<GUI::Action> m_mkdir_action;
     RefPtr<GUI::Action> m_touch_action;
+    RefPtr<GUI::Action> m_open_terminal_action;
+    RefPtr<GUI::Action> m_delete_action;
+    RefPtr<GUI::Action> m_force_delete_action;
 };
+
+}

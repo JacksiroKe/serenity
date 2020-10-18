@@ -282,6 +282,18 @@ void TextDocument::set_all_cursors(const TextPosition& position)
     }
 }
 
+String TextDocument::text() const
+{
+    StringBuilder builder;
+    for (size_t i = 0; i < line_count(); ++i) {
+        auto& line = this->line(i);
+        builder.append(line.view());
+        if (i != line_count() - 1)
+            builder.append('\n');
+    }
+    return builder.to_string();
+}
+
 String TextDocument::text_in_range(const TextRange& a_range) const
 {
     auto range = a_range.normalized();
@@ -673,6 +685,11 @@ void TextDocument::remove(const TextRange& unnormalized_range)
     }
 
     notify_did_change();
+}
+
+bool TextDocument::is_empty() const
+{
+    return line_count() == 1 && line(0).is_empty();
 }
 
 TextRange TextDocument::range_for_entire_line(size_t line_index) const

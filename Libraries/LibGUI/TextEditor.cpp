@@ -26,6 +26,7 @@
 
 #include <AK/QuickSort.h>
 #include <AK/StringBuilder.h>
+#include <AK/TemporaryChange.h>
 #include <LibCore/Timer.h>
 #include <LibGUI/Action.h>
 #include <LibGUI/Clipboard.h>
@@ -53,6 +54,8 @@ namespace GUI {
 TextEditor::TextEditor(Type type)
     : m_type(type)
 {
+    REGISTER_STRING_PROPERTY("text", text, set_text);
+
     set_accepts_emoji_input(true);
     set_override_cursor(Gfx::StandardCursor::IBeam);
     set_background_role(ColorRole::Base);
@@ -461,7 +464,12 @@ void TextEditor::paint_event(PaintEvent& event)
 #ifdef DEBUG_TEXTEDITOR
             painter.draw_rect(visual_line_rect, Color::Cyan);
 #endif
-            if (!document().has_spans()) {
+
+            if (!placeholder().is_empty() && document().is_empty() && !is_focused() && line_index == 0) {
+                auto line_rect = visual_line_rect;
+                line_rect.set_width(font().width(placeholder()));
+                painter.draw_text(line_rect, placeholder(), m_text_alignment, palette().color(Gfx::ColorRole::PlaceholderText));
+            } else if (!document().has_spans()) {
                 // Fast-path for plain text
                 auto color = palette().color(is_enabled() ? foreground_role() : Gfx::ColorRole::DisabledText);
                 if (is_displayonly() && (is_focused() || has_visible_list()))
@@ -787,6 +795,15 @@ void TextEditor::keydown_event(KeyEvent& event)
         return;
     }
     if (event.key() == KeyCode::Key_Left) {
+        if (!event.shift() && m_selection.is_valid()) {
+            set_cursor(m_selection.normalized().start());
+            m_selection.clear();
+            did_update_selection();
+            if (!event.ctrl()) {
+                update();
+                return;
+            }
+        }
         if (event.ctrl()) {
             TextPosition new_cursor;
             if (document().has_spans()) {
@@ -829,6 +846,15 @@ void TextEditor::keydown_event(KeyEvent& event)
         return;
     }
     if (event.key() == KeyCode::Key_Right) {
+        if (!event.shift() && m_selection.is_valid()) {
+            set_cursor(m_selection.normalized().end());
+            m_selection.clear();
+            did_update_selection();
+            if (!event.ctrl()) {
+                update();
+                return;
+            }
+        }
         if (event.ctrl()) {
             TextPosition new_cursor;
             if (document().has_spans()) {
@@ -1247,14 +1273,7 @@ bool TextEditor::write_to_file(const StringView& path)
 
 String TextEditor::text() const
 {
-    StringBuilder builder;
-    for (size_t i = 0; i < line_count(); ++i) {
-        auto& line = this->line(i);
-        builder.append(line.view());
-        if (i != line_count() - 1)
-            builder.append('\n');
-    }
-    return builder.to_string();
+    return document().text();
 }
 
 void TextEditor::clear()

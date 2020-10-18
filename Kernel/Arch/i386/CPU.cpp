@@ -150,10 +150,11 @@ static void dump(const RegisterState& regs)
     klog() << "cr0=" << String::format("%08x", cr0) << " cr2=" << String::format("%08x", cr2) << " cr3=" << String::format("%08x", cr3) << " cr4=" << String::format("%08x", cr4);
 
     auto process = Process::current();
-    if (process && process->validate_read((void*)regs.eip, 8)) {
+    u8 code[8];
+    void* fault_at;
+    if (process && safe_memcpy(code, (void*)regs.eip, 8, fault_at)) {
         SmapDisabler disabler;
-        u8* codeptr = (u8*)regs.eip;
-        klog() << "code: " << String::format("%02x", codeptr[0]) << " " << String::format("%02x", codeptr[1]) << " " << String::format("%02x", codeptr[2]) << " " << String::format("%02x", codeptr[3]) << " " << String::format("%02x", codeptr[4]) << " " << String::format("%02x", codeptr[5]) << " " << String::format("%02x", codeptr[6]) << " " << String::format("%02x", codeptr[7]);
+        klog() << "code: " << String::format("%02x", code[0]) << " " << String::format("%02x", code[1]) << " " << String::format("%02x", code[2]) << " " << String::format("%02x", code[3]) << " " << String::format("%02x", code[4]) << " " << String::format("%02x", code[5]) << " " << String::format("%02x", code[6]) << " " << String::format("%02x", code[7]);
     }
 }
 
@@ -212,6 +213,169 @@ void fpu_exception_handler(TrapFrame*)
     asm volatile("clts");
 }
 
+extern "C" u8* safe_memcpy_ins_1;
+extern "C" u8* safe_memcpy_1_faulted;
+extern "C" u8* safe_memcpy_ins_2;
+extern "C" u8* safe_memcpy_2_faulted;
+extern "C" u8* safe_strnlen_ins;
+extern "C" u8* safe_strnlen_faulted;
+extern "C" u8* safe_memset_ins_1;
+extern "C" u8* safe_memset_1_faulted;
+extern "C" u8* safe_memset_ins_2;
+extern "C" u8* safe_memset_2_faulted;
+
+bool safe_memcpy(void* dest_ptr, const void* src_ptr, size_t n, void*& fault_at)
+{
+    fault_at = nullptr;
+    size_t dest = (size_t)dest_ptr;
+    size_t src = (size_t)src_ptr;
+    size_t remainder;
+    // FIXME: Support starting at an unaligned address.
+    if (!(dest & 0x3) && !(src & 0x3) && n >= 12) {
+        size_t size_ts = n / sizeof(size_t);
+        asm volatile(
+            ".global safe_memcpy_ins_1 \n"
+            "safe_memcpy_ins_1: \n"
+            "rep movsl \n"
+            ".global safe_memcpy_1_faulted \n"
+            "safe_memcpy_1_faulted: \n" // handle_safe_access_fault() set edx to the fault address!
+            : "=S" (src),
+              "=D" (dest),
+              "=c" (remainder),
+              [fault_at] "=d" (fault_at)
+            : "S" (src),
+              "D" (dest),
+              "c" (size_ts)
+            : "memory");
+        if (remainder != 0)
+            return false; // fault_at is already set!
+        n -= size_ts * sizeof(size_t);
+        if (n == 0) {
+            fault_at = nullptr;
+            return true;
+        }
+    }
+    asm volatile(
+        ".global safe_memcpy_ins_2 \n"
+        "safe_memcpy_ins_2: \n"
+        "rep movsb \n"
+        ".global safe_memcpy_2_faulted \n"
+        "safe_memcpy_2_faulted: \n" // handle_safe_access_fault() set edx to the fault address!
+        : "=c" (remainder),
+          [fault_at] "=d" (fault_at)
+        : "S" (src),
+          "D" (dest),
+          "c" (n)
+        : "memory");
+    if (remainder != 0)
+        return false; // fault_at is already set!
+    fault_at = nullptr;
+    return true;
+}
+
+ssize_t safe_strnlen(const char* str, size_t max_n, void*& fault_at)
+{
+    ssize_t count = 0;
+    fault_at = nullptr;
+    asm volatile(
+        "1: \n"
+        "test %[max_n], %[max_n] \n"
+        "je 2f \n"
+        "dec %[max_n] \n"
+        ".global safe_strnlen_ins \n"
+        "safe_strnlen_ins: \n"
+        "cmpb $0,(%[str], %[count], 1) \n"
+        "je 2f \n"
+        "inc %[count] \n"
+        "jmp 1b \n"
+        ".global safe_strnlen_faulted \n"
+        "safe_strnlen_faulted: \n" // handle_safe_access_fault() set edx to the fault address!
+        "xor %[count_on_error], %[count_on_error] \n"
+        "dec %[count_on_error] \n" // return -1 on fault
+        "2:"
+        : [count_on_error] "=c" (count),
+          [fault_at] "=d" (fault_at)
+        : [str] "b" (str),
+          [count] "c" (count),
+          [max_n] "d" (max_n)
+    );
+    if (count >= 0)
+        fault_at = nullptr;
+    return count;
+}
+
+bool safe_memset(void* dest_ptr, int c, size_t n, void*& fault_at)
+{
+    fault_at = nullptr;
+    size_t dest = (size_t)dest_ptr;
+    size_t remainder;
+    // FIXME: Support starting at an unaligned address.
+    if (!(dest & 0x3) && n >= 12) {
+        size_t size_ts = n / sizeof(size_t);
+        size_t expanded_c = (u8)c;
+        expanded_c |= expanded_c << 8;
+        expanded_c |= expanded_c << 16;
+        asm volatile(
+            ".global safe_memset_ins_1 \n"
+            "safe_memset_ins_1: \n"
+            "rep stosl \n"
+            ".global safe_memset_1_faulted \n"
+            "safe_memset_1_faulted: \n" // handle_safe_access_fault() set edx to the fault address!
+            : "=D" (dest),
+              "=c" (remainder),
+              [fault_at] "=d" (fault_at)
+            : "D" (dest),
+              "a" (expanded_c),
+              "c" (size_ts)
+            : "memory");
+        if (remainder != 0)
+            return false; // fault_at is already set!
+        n -= size_ts * sizeof(size_t);
+        if (remainder == 0) {
+            fault_at = nullptr;
+            return true;
+        }
+    }
+    asm volatile(
+        ".global safe_memset_ins_2 \n"
+        "safe_memset_ins_2: \n"
+        "rep stosb \n"
+        ".global safe_memset_2_faulted \n"
+        "safe_memset_2_faulted: \n" // handle_safe_access_fault() set edx to the fault address!
+        : "=D" (dest),
+          "=c" (remainder),
+          [fault_at] "=d" (fault_at)
+        : "D" (dest),
+          "c" (n),
+          "a" (c)
+        : "memory");
+    if (remainder != 0)
+        return false; // fault_at is already set!
+    fault_at = nullptr;
+    return true;
+}
+
+static bool handle_safe_access_fault(RegisterState& regs, u32 fault_address)
+{
+    // If we detect that the fault happened in safe_memcpy() safe_strnlen(),
+    // or safe_memset() then resume at the appropriate _faulted label
+    if (regs.eip == (FlatPtr)&safe_memcpy_ins_1)
+        regs.eip = (FlatPtr)&safe_memcpy_1_faulted;
+    else if (regs.eip == (FlatPtr)&safe_memcpy_ins_2)
+        regs.eip = (FlatPtr)&safe_memcpy_2_faulted;
+    else if (regs.eip == (FlatPtr)&safe_strnlen_ins)
+        regs.eip = (FlatPtr)&safe_strnlen_faulted;
+    else if (regs.eip == (FlatPtr)&safe_memset_ins_1)
+        regs.eip = (FlatPtr)&safe_memset_1_faulted;
+    else if (regs.eip == (FlatPtr)&safe_memset_ins_2)
+        regs.eip = (FlatPtr)&safe_memset_2_faulted;
+    else
+        return false;
+
+    regs.edx = fault_address;
+    return true;
+}
+
 // 14: Page Fault
 EH_ENTRY(14, page_fault);
 void page_fault_handler(TrapFrame* trap)
@@ -237,9 +401,22 @@ void page_fault_handler(TrapFrame* trap)
     dump(regs);
 #endif
 
-    bool faulted_in_userspace = (regs.cs & 3) == 3;
+    bool faulted_in_kernel = !(regs.cs & 3);
+
+    if (faulted_in_kernel && Processor::current().in_irq()) {
+        // If we're faulting in an IRQ handler, first check if we failed
+        // due to safe_memcpy, safe_strnlen, or safe_memset. If we did,
+        // gracefully continue immediately. Because we're in an IRQ handler
+        // we can't really try to resolve the page fault in a meaningful
+        // way, so we need to do this before calling into
+        // MemoryManager::handle_page_fault, which would just bail and
+        // request a crash
+        if (handle_safe_access_fault(regs, fault_address))
+            return;
+    }
+
     auto current_thread = Thread::current();
-    if (faulted_in_userspace && !MM.validate_user_stack(current_thread->process(), VirtualAddress(regs.userspace_esp))) {
+    if (!faulted_in_kernel && !MM.validate_user_stack(current_thread->process(), VirtualAddress(regs.userspace_esp))) {
         dbg() << "Invalid stack pointer: " << VirtualAddress(regs.userspace_esp);
         handle_crash(regs, "Bad stack on page fault", SIGSTKFLT);
         ASSERT_NOT_REACHED();
@@ -248,6 +425,13 @@ void page_fault_handler(TrapFrame* trap)
     auto response = MM.handle_page_fault(PageFault(regs.exception_code, VirtualAddress(fault_address)));
 
     if (response == PageFaultResponse::ShouldCrash || response == PageFaultResponse::OutOfMemory) {
+        if (faulted_in_kernel && handle_safe_access_fault(regs, fault_address)) {
+            // If this would be a ring0 (kernel) fault and the fault was triggered by
+            // safe_memcpy, safe_strnlen, or safe_memset then we resume execution at
+            // the appropriate _fault label rather than crashing
+            return;
+        }
+
         if (response != PageFaultResponse::OutOfMemory) {
             if (current_thread->has_signal_handler(SIGSEGV)) {
                 current_thread->send_urgent_signal_to_self(SIGSEGV);
@@ -814,13 +998,29 @@ void Processor::cpu_detect()
         u32 family = (processor_info.eax() >> 8) & 0xf;
         if (!(family == 6 && model < 3 && stepping < 3))
             set_feature(CPUFeature::SEP);
+        if ((family == 6 && model >= 3) || (family == 0xf && model >= 0xe))
+            set_feature(CPUFeature::CONSTANT_TSC);
     }
+
+    u32 max_extended_leaf = CPUID(0x80000000).eax();
+
+    ASSERT(max_extended_leaf >= 0x80000001);
     CPUID extended_processor_info(0x80000001);
     if (extended_processor_info.edx() & (1 << 20))
         set_feature(CPUFeature::NX);
+    if (extended_processor_info.edx() & (1 << 27))
+        set_feature(CPUFeature::RDTSCP);
     if (extended_processor_info.edx() & (1 << 11)) {
         // Only available in 64 bit mode
         set_feature(CPUFeature::SYSCALL);
+    }
+
+    if (max_extended_leaf >= 0x80000007) {
+        CPUID cpuid(0x80000007);
+        if (cpuid.edx() & (1 << 8)) {
+            set_feature(CPUFeature::CONSTANT_TSC);
+            set_feature(CPUFeature::NONSTOP_TSC);
+        }
     }
 
     CPUID extended_features(0x7);
@@ -923,6 +1123,12 @@ String Processor::features_string() const
                     return "sse";
                 case CPUFeature::TSC:
                     return "tsc";
+                case CPUFeature::RDTSCP:
+                    return "rdtscp";
+                case CPUFeature::CONSTANT_TSC:
+                    return "constant_tsc";
+                case CPUFeature::NONSTOP_TSC:
+                    return "nonstop_tsc";
                 case CPUFeature::UMIP:
                     return "umip";
                 case CPUFeature::SEP:
@@ -1093,7 +1299,7 @@ bool Processor::get_context_frame_ptr(Thread& thread, u32& frame_ptr, u32& eip)
             // an IPI to that processor, have it walk the stack and wait
             // until it returns the data back to us
             dbg() << "CPU[" << proc.id() << "] getting stack for "
-                << thread << " on other CPU# " << thread.cpu() << " not yet implemented!";
+                  << thread << " on other CPU# " << thread.cpu() << " not yet implemented!";
             frame_ptr = eip = 0; // TODO
             return false;
         } else {
@@ -1406,7 +1612,7 @@ void Processor::initialize_context_switching(Thread& initial_thread)
     m_scheduler_initialized = true;
 
     asm volatile(
-        "movl %[new_esp], %%esp \n" // swich to new stack
+        "movl %[new_esp], %%esp \n" // switch to new stack
         "pushl %[from_to_thread] \n" // to_thread
         "pushl %[from_to_thread] \n" // from_thread
         "pushl $" __STRINGIFY(GDT_SELECTOR_CODE0) " \n"
@@ -1545,12 +1751,12 @@ void Processor::smp_enable()
 void Processor::smp_cleanup_message(ProcessorMessage& msg)
 {
     switch (msg.type) {
-        case ProcessorMessage::CallbackWithData:
-            if (msg.callback_with_data.free)
-                msg.callback_with_data.free(msg.callback_with_data.data);
-            break;
-        default:
-            break;
+    case ProcessorMessage::CallbackWithData:
+        if (msg.callback_with_data.free)
+            msg.callback_with_data.free(msg.callback_with_data.data);
+        break;
+    default:
+        break;
     }
 }
 
@@ -1560,8 +1766,7 @@ bool Processor::smp_process_pending_messages()
     u32 prev_flags;
     enter_critical(prev_flags);
 
-    if (auto pending_msgs = atomic_exchange(&m_message_queue, nullptr, AK::MemoryOrder::memory_order_acq_rel))
-    {
+    if (auto pending_msgs = atomic_exchange(&m_message_queue, nullptr, AK::MemoryOrder::memory_order_acq_rel)) {
         // We pulled the stack of pending messages in LIFO order, so we need to reverse the list first
         auto reverse_list =
             [](ProcessorMessageEntry* list) -> ProcessorMessageEntry*
@@ -1583,21 +1788,21 @@ bool Processor::smp_process_pending_messages()
         for (auto cur_msg = pending_msgs; cur_msg; cur_msg = next_msg) {
             next_msg = cur_msg->next;
             auto msg = cur_msg->msg;
-            
+
 #ifdef SMP_DEBUG
             dbg() << "SMP[" << id() << "]: Processing message " << VirtualAddress(msg);
 #endif
 
             switch (msg->type) {
-                case ProcessorMessage::Callback:
-                    msg->callback.handler();
-                    break;
-                case ProcessorMessage::CallbackWithData:
-                    msg->callback_with_data.handler(msg->callback_with_data.data);
-                    break;
-                case ProcessorMessage::FlushTlb:
-                    flush_tlb_local(VirtualAddress(msg->flush_tlb.ptr), msg->flush_tlb.page_count);
-                    break;
+            case ProcessorMessage::Callback:
+                msg->callback.handler();
+                break;
+            case ProcessorMessage::CallbackWithData:
+                msg->callback_with_data.handler(msg->callback_with_data.data);
+                break;
+            case ProcessorMessage::FlushTlb:
+                flush_tlb_local(VirtualAddress(msg->flush_tlb.ptr), msg->flush_tlb.page_count);
+                break;
             }
 
             bool is_async = msg->async; // Need to cache this value *before* dropping the ref count!
@@ -1648,8 +1853,7 @@ void Processor::smp_broadcast_message(ProcessorMessage& msg, bool async)
     atomic_store(&msg.refs, count() - 1, AK::MemoryOrder::memory_order_release);
     ASSERT(msg.refs > 0);
     for_each(
-        [&](Processor& proc) -> IterationDecision
-        {
+        [&](Processor& proc) -> IterationDecision {
             if (&proc != &cur_proc) {
                 if (proc.smp_queue_message(msg)) {
                     // TODO: only send IPI to that CPU if we queued the first
@@ -1705,8 +1909,7 @@ void Processor::smp_broadcast_halt()
     // We don't want to use a message, because this could have been triggered
     // by being out of memory and we might not be able to get a message
     for_each(
-        [&](Processor& proc) -> IterationDecision
-        {
+        [&](Processor& proc) -> IterationDecision {
             proc.m_halt_requested = true;
             return IterationDecision::Continue;
         });

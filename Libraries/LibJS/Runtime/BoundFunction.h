@@ -38,9 +38,9 @@ public:
     virtual void initialize(GlobalObject&) override;
     virtual ~BoundFunction();
 
-    virtual Value call(Interpreter& interpreter) override;
+    virtual Value call() override;
 
-    virtual Value construct(Interpreter&, Function& new_target) override;
+    virtual Value construct(Function& new_target) override;
 
     virtual LexicalEnvironment* create_environment() override;
 
@@ -55,6 +55,8 @@ public:
     {
         return *m_target_function;
     }
+
+    virtual bool is_strict_mode() const override { return m_target_function->is_strict_mode(); }
 
 private:
     virtual bool is_bound_function() const override { return true; }

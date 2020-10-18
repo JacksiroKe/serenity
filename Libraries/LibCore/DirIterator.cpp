@@ -24,6 +24,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <AK/Vector.h>
 #include <LibCore/DirIterator.h>
 #include <errno.h>
 
@@ -95,7 +96,26 @@ String DirIterator::next_path()
 
 String DirIterator::next_full_path()
 {
-    return String::format("%s/%s", m_path.characters(), next_path().characters());
+    return String::formatted("{}/{}", m_path, next_path());
+}
+
+String find_executable_in_path(String filename)
+{
+    if (filename.starts_with('/')) {
+        if (access(filename.characters(), X_OK) == 0)
+            return filename;
+
+        return {};
+    }
+
+    for (auto directory : String { getenv("PATH") }.split(':')) {
+        auto fullpath = String::formatted("{}/{}", directory, filename);
+
+        if (access(fullpath.characters(), X_OK) == 0)
+            return fullpath;
+    }
+
+    return {};
 }
 
 }

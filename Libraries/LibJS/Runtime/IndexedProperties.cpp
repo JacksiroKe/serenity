@@ -262,7 +262,7 @@ bool IndexedPropertyIterator::operator!=(const IndexedPropertyIterator& other) c
 ValueAndAttributes IndexedPropertyIterator::value_and_attributes(Object* this_object, bool evaluate_accessors)
 {
     if (m_index < m_indexed_properties.array_like_size())
-        return m_indexed_properties.get(this_object, m_index, evaluate_accessors).value();
+        return m_indexed_properties.get(this_object, m_index, evaluate_accessors).value_or({});
     return {};
 }
 
@@ -341,7 +341,7 @@ void IndexedProperties::append_all(Object* this_object, const IndexedProperties&
 
     for (auto it = properties.begin(false); it != properties.end(); ++it) {
         const auto& element = it.value_and_attributes(this_object, evaluate_accessors);
-        if (this_object && this_object->interpreter().exception())
+        if (this_object && this_object->vm().exception())
             return;
         m_storage->put(m_storage->array_like_size(), element.value, element.attributes);
     }

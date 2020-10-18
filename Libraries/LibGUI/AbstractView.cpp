@@ -224,6 +224,8 @@ void AbstractView::mousedown_event(MouseEvent& event)
     } else if (event.button() == MouseButton::Left && m_selection.contains(index) && !m_model->drag_data_type().is_null()) {
         // We might be starting a drag, so don't throw away other selected items yet.
         m_might_drag = true;
+    } else if (event.button() == MouseButton::Right) {
+        set_cursor(index, SelectionUpdate::ClearIfNotSelected);
     } else {
         set_cursor(index, SelectionUpdate::Set);
     }
@@ -424,9 +426,13 @@ void AbstractView::set_cursor(ModelIndex index, SelectionUpdate selection_update
 
     if (model()->is_valid(index)) {
         if (selection_update == SelectionUpdate::Set)
-            selection().set(index);
+            set_selection(index);
         else if (selection_update == SelectionUpdate::Ctrl)
             toggle_selection(index);
+        else if (selection_update == SelectionUpdate::ClearIfNotSelected) {
+            if (!m_selection.contains(index))
+                clear_selection();
+        }
 
         // FIXME: Support the other SelectionUpdate types
 
@@ -445,8 +451,28 @@ void AbstractView::set_edit_triggers(unsigned triggers)
     m_edit_triggers = triggers;
 }
 
+void AbstractView::hide_event(HideEvent& event)
+{
+    stop_editing();
+    ScrollableWidget::hide_event(event);
+}
+
 void AbstractView::keydown_event(KeyEvent& event)
 {
+    if (event.key() == KeyCode::Key_F2) {
+        if (is_editable() && edit_triggers() & EditTrigger::EditKeyPressed) {
+            begin_editing(cursor_index());
+            event.accept();
+            return;
+        }
+    }
+
+    if (event.key() == KeyCode::Key_Return) {
+        activate_selected();
+        event.accept();
+        return;
+    }
+
     SelectionUpdate selection_update = SelectionUpdate::Set;
     if (event.modifiers() == KeyModifier::Mod_Shift) {
         selection_update = SelectionUpdate::Shift;
@@ -492,6 +518,8 @@ void AbstractView::keydown_event(KeyEvent& event)
         event.accept();
         return;
     }
+
+    Widget::keydown_event(event);
 }
 
 }

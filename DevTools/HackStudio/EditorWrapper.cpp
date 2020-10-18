@@ -35,7 +35,7 @@
 
 namespace HackStudio {
 
-EditorWrapper::EditorWrapper(BreakpointChangeCallback breakpoint_change_callback)
+EditorWrapper::EditorWrapper()
 {
     set_layout<GUI::VerticalBoxLayout>();
 
@@ -62,18 +62,16 @@ EditorWrapper::EditorWrapper(BreakpointChangeCallback breakpoint_change_callback
     m_editor->set_automatic_indentation_enabled(true);
 
     m_editor->on_cursor_change = [this] {
-        m_cursor_label->set_text(String::format("Line: %d, Column: %d", m_editor->cursor().line() + 1, m_editor->cursor().column()));
+        m_cursor_label->set_text(String::formatted("Line: {}, Column: {}", m_editor->cursor().line() + 1, m_editor->cursor().column()));
     };
 
     m_editor->on_focus = [this] {
-        g_current_editor_wrapper = this;
+        set_current_editor_wrapper(this);
     };
 
     m_editor->on_open = [](String path) {
-        g_open_file(path);
+        open_file(path);
     };
-
-    m_editor->on_breakpoint_change = move(breakpoint_change_callback);
 }
 
 EditorWrapper::~EditorWrapper()

@@ -25,8 +25,8 @@
  */
 
 #include <LibJS/Heap/Heap.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Symbol.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
@@ -45,9 +45,9 @@ Symbol* js_symbol(Heap& heap, String description, bool is_global)
     return heap.allocate_without_global_object<Symbol>(move(description), is_global);
 }
 
-Symbol* js_symbol(Interpreter& interpreter, String description, bool is_global)
+Symbol* js_symbol(VM& vm, String description, bool is_global)
 {
-    return js_symbol(interpreter.heap(), description, is_global);
+    return js_symbol(vm.heap(), move(description), is_global);
 }
 
 }

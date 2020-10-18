@@ -26,58 +26,31 @@
 
 #include <AK/Demangle.h>
 #include <AK/QuickSort.h>
-#include <AK/RefPtr.h>
-#include <AK/ScopeGuard.h>
-#include <AK/ScopedValueRollback.h>
 #include <AK/StdLibExtras.h>
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <AK/Types.h>
-#include <Kernel/ACPI/Parser.h>
 #include <Kernel/API/Syscall.h>
 #include <Kernel/Arch/i386/CPU.h>
-#include <Kernel/Console.h>
-#include <Kernel/Devices/BlockDevice.h>
-#include <Kernel/Devices/KeyboardDevice.h>
 #include <Kernel/Devices/NullDevice.h>
 #include <Kernel/FileSystem/Custody.h>
-#include <Kernel/FileSystem/DevPtsFS.h>
-#include <Kernel/FileSystem/Ext2FileSystem.h>
-#include <Kernel/FileSystem/FIFO.h>
 #include <Kernel/FileSystem/FileDescription.h>
-#include <Kernel/FileSystem/InodeWatcher.h>
-#include <Kernel/FileSystem/Plan9FileSystem.h>
-#include <Kernel/FileSystem/ProcFS.h>
-#include <Kernel/FileSystem/TmpFS.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
 #include <Kernel/Heap/kmalloc.h>
-#include <Kernel/IO.h>
 #include <Kernel/KBufferBuilder.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Module.h>
-#include <Kernel/Multiboot.h>
 #include <Kernel/PerformanceEventBuffer.h>
 #include <Kernel/Process.h>
-#include <Kernel/RTC.h>
-#include <Kernel/Scheduler.h>
 #include <Kernel/SharedBuffer.h>
 #include <Kernel/StdLib.h>
-#include <Kernel/TTY/MasterPTY.h>
 #include <Kernel/TTY/TTY.h>
 #include <Kernel/Thread.h>
-#include <Kernel/ThreadTracer.h>
-#include <Kernel/Time/TimeManagement.h>
 #include <Kernel/VM/PageDirectory.h>
-#include <Kernel/VM/PrivateInodeVMObject.h>
-#include <Kernel/VM/ProcessPagingScope.h>
-#include <Kernel/VM/PurgeableVMObject.h>
 #include <Kernel/VM/SharedInodeVMObject.h>
 #include <LibC/errno_numbers.h>
 #include <LibC/limits.h>
-#include <LibC/signal_numbers.h>
 #include <LibELF/Loader.h>
-#include <LibELF/Validation.h>
-#include <LibKeyboard/CharacterMapData.h>
 
 //#define DEBUG_IO
 //#define DEBUG_POLL_SELECT
@@ -273,8 +246,8 @@ void Process::kill_threads_except_self()
             || thread.state() == Thread::State::Dying)
             return IterationDecision::Continue;
 
-        // At this point, we have no joiner anymore
-        thread.m_joiner = nullptr;
+        // We need to detach this thread in case it hasn't been joined
+        thread.detach();
         thread.set_should_die();
         return IterationDecision::Continue;
     });
@@ -285,12 +258,14 @@ void Process::kill_threads_except_self()
 void Process::kill_all_threads()
 {
     for_each_thread([&](Thread& thread) {
+        // We need to detach this thread in case it hasn't been joined
+        thread.detach();
         thread.set_should_die();
         return IterationDecision::Continue;
     });
 }
 
-RefPtr<Process> Process::create_user_process(Thread*& first_thread, const String& path, uid_t uid, gid_t gid, ProcessID parent_pid, int& error, Vector<String>&& arguments, Vector<String>&& environment, TTY* tty)
+RefPtr<Process> Process::create_user_process(RefPtr<Thread>& first_thread, const String& path, uid_t uid, gid_t gid, ProcessID parent_pid, int& error, Vector<String>&& arguments, Vector<String>&& environment, TTY* tty)
 {
     auto parts = path.split('/');
     if (arguments.is_empty()) {
@@ -323,7 +298,7 @@ RefPtr<Process> Process::create_user_process(Thread*& first_thread, const String
     error = process->exec(path, move(arguments), move(environment));
     if (error != 0) {
         dbg() << "Failed to exec " << path << ": " << error;
-        delete first_thread;
+        first_thread = nullptr;
         return {};
     }
 
@@ -336,7 +311,7 @@ RefPtr<Process> Process::create_user_process(Thread*& first_thread, const String
     return process;
 }
 
-NonnullRefPtr<Process> Process::create_kernel_process(Thread*& first_thread, String&& name, void (*e)(), u32 affinity)
+NonnullRefPtr<Process> Process::create_kernel_process(RefPtr<Thread>& first_thread, String&& name, void (*e)(), u32 affinity)
 {
     auto process = adopt(*new Process(first_thread, move(name), (uid_t)0, (gid_t)0, ProcessID(0), true));
     first_thread->tss().eip = (FlatPtr)e;
@@ -352,7 +327,7 @@ NonnullRefPtr<Process> Process::create_kernel_process(Thread*& first_thread, Str
     return process;
 }
 
-Process::Process(Thread*& first_thread, const String& name, uid_t uid, gid_t gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty, Process* fork_parent)
+Process::Process(RefPtr<Thread>& first_thread, const String& name, uid_t uid, gid_t gid, ProcessID ppid, bool is_kernel_process, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty, Process* fork_parent)
     : m_name(move(name))
     , m_pid(allocate_pid())
     , m_euid(uid)
@@ -381,13 +356,15 @@ Process::Process(Thread*& first_thread, const String& name, uid_t uid, gid_t gid
         first_thread = Thread::current()->clone(*this);
     } else {
         // NOTE: This non-forked code path is only taken when the kernel creates a process "manually" (at boot.)
-        first_thread = new Thread(*this);
+        first_thread = adopt(*new Thread(*this));
+        first_thread->detach();
     }
 }
 
 Process::~Process()
 {
-    ASSERT(thread_count() == 0);
+    ASSERT(!m_next && !m_prev);  // should have been reaped
+    ASSERT(thread_count() == 0); // all threads should have been finalized
 }
 
 void Process::dump_regions()
@@ -420,7 +397,7 @@ void signal_trampoline_dummy(void)
     // then calls the signal handler. We do this because, when interrupting a
     // blocking syscall, that syscall may return some special error code in eax;
     // This error code would likely be overwritten by the signal handler, so it's
-    // neccessary to preserve it here.
+    // necessary to preserve it here.
     asm(
         ".intel_syntax noprefix\n"
         "asm_signal_trampoline:\n"
@@ -520,24 +497,6 @@ int Process::fd_flags(int fd) const
     return -1;
 }
 
-String Process::validate_and_copy_string_from_user(const char* user_characters, size_t user_length) const
-{
-    if (user_length == 0)
-        return String::empty();
-    if (!user_characters)
-        return {};
-    if (!validate_read(user_characters, user_length))
-        return {};
-    SmapDisabler disabler;
-    size_t measured_length = strnlen(user_characters, user_length);
-    return String(user_characters, measured_length);
-}
-
-String Process::validate_and_copy_string_from_user(const Syscall::StringArgument& string) const
-{
-    return validate_and_copy_string_from_user(string.characters, string.length);
-}
-
 int Process::number_of_open_file_descriptors() const
 {
     int count = 0;
@@ -602,27 +561,6 @@ siginfo_t Process::reap(Process& process)
     return siginfo;
 }
 
-bool Process::validate_read_from_kernel(VirtualAddress vaddr, size_t size) const
-{
-    if (vaddr.is_null())
-        return false;
-    return MM.validate_kernel_read(*this, vaddr, size);
-}
-
-bool Process::validate_read(const void* address, size_t size) const
-{
-    if (!size)
-        return false;
-    return MM.validate_user_read(*this, VirtualAddress(address), size);
-}
-
-bool Process::validate_write(void* address, size_t size) const
-{
-    if (!size)
-        return false;
-    return MM.validate_user_write(*this, VirtualAddress(address), size);
-}
-
 Custody& Process::current_directory()
 {
     if (!m_cwd)
@@ -636,9 +574,10 @@ KResultOr<String> Process::get_syscall_path_argument(const char* user_path, size
         return KResult(-EINVAL);
     if (path_length > PATH_MAX)
         return KResult(-ENAMETOOLONG);
-    if (!validate_read(user_path, path_length))
+    auto copied_string = copy_string_from_user(user_path, path_length);
+    if (copied_string.is_null())
         return KResult(-EFAULT);
-    return copy_string_from_user(user_path, path_length);
+    return copied_string;
 }
 
 KResultOr<String> Process::get_syscall_path_argument(const Syscall::StringArgument& path) const
@@ -658,8 +597,11 @@ void Process::finalize()
         if (!description_or_error.is_error()) {
             auto& description = description_or_error.value();
             auto json = m_perf_event_buffer->to_json(m_pid, m_executable ? m_executable->absolute_path() : "");
-            // FIXME: Should this error path be surfaced somehow?
-            (void)description->write(json.data(), json.size());
+            auto json_buffer = UserOrKernelBuffer::for_kernel_buffer(json.data());
+            auto result = description->write(json_buffer, json.size());
+            if (result.is_error()) {
+                dbgln("Error while writing perfcore file: {}", result.error().error());
+            }
         }
     }
 
@@ -674,7 +616,7 @@ void Process::finalize()
     {
         InterruptDisabler disabler;
         // FIXME: PID/TID BUG
-        if (auto* parent_thread = Thread::from_tid(m_ppid.value())) {
+        if (auto parent_thread = Thread::from_tid(m_ppid.value())) {
             if (parent_thread->m_signal_action_data[SIGCHLD].flags & SA_NOCLDWAIT) {
                 // NOTE: If the parent doesn't care about this process, let it go.
                 m_ppid = 0;
@@ -822,18 +764,19 @@ KResult Process::send_signal(u8 signal, Process* sender)
     return KResult(-ESRCH);
 }
 
-Thread* Process::create_kernel_thread(void (*entry)(), u32 priority, const String& name, u32 affinity, bool joinable)
+RefPtr<Thread> Process::create_kernel_thread(void (*entry)(), u32 priority, const String& name, u32 affinity, bool joinable)
 {
     ASSERT((priority >= THREAD_PRIORITY_MIN) && (priority <= THREAD_PRIORITY_MAX));
 
     // FIXME: Do something with guard pages?
 
-    auto* thread = new Thread(*this);
+    auto thread = adopt(*new Thread(*this));
 
     thread->set_name(name);
     thread->set_affinity(affinity);
     thread->set_priority(priority);
-    thread->set_joinable(joinable);
+    if (!joinable)
+        thread->detach();
 
     auto& tss = thread->tss();
     tss.eip = (FlatPtr)entry;

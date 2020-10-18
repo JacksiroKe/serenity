@@ -26,8 +26,8 @@
 
 #include <AK/Assertions.h>
 #include <AK/String.h>
-#include <LibELF/exec_elf.h>
 #include <LibELF/Validation.h>
+#include <LibELF/exec_elf.h>
 
 namespace ELF {
 
@@ -200,6 +200,12 @@ bool validate_program_headers(const Elf32_Ehdr& elf_header, size_t file_size, u8
         case PT_GNU_STACK:
             if (program_header.p_flags & PF_X) {
                 dbgprintf("Possible shenanigans! Validating an ELF with executable stack.\n");
+            }
+            break;
+        case PT_GNU_RELRO:
+            if ((program_header.p_flags & PF_X) && (program_header.p_flags & PF_W)) {
+                dbgprintf("SHENANIGANS! Program header %zu segment is marked write and execute\n", header_index);
+                return false;
             }
             break;
         default:

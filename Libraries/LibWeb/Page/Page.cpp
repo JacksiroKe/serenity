@@ -24,9 +24,9 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <LibWeb/InProcessWebView.h>
 #include <LibWeb/Page/Frame.h>
 #include <LibWeb/Page/Page.h>
-#include <LibWeb/InProcessWebView.h>
 
 namespace Web {
 
@@ -55,6 +55,16 @@ void Page::set_focused_frame(Badge<EventHandler>, Frame& frame)
 void Page::load(const URL& url)
 {
     main_frame().loader().load(url, FrameLoader::Type::Navigation);
+}
+
+void Page::load(const LoadRequest& request)
+{
+    main_frame().loader().load(request, FrameLoader::Type::Navigation);
+}
+
+void Page::load_html(const StringView& html, const URL& url)
+{
+    main_frame().loader().load_html(html, url);
 }
 
 Gfx::Palette Page::palette() const

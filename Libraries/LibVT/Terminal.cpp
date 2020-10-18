@@ -93,9 +93,9 @@ void Terminal::alter_mode(bool should_set, bool question_param, const ParamVecto
             // Hide cursor command, but doesn't need to be run (for now, because
             // we don't do inverse control codes anyways)
             if (should_set)
-                dbgprintf("Terminal: Hide Cursor escapecode recieved. Not needed: ignored.\n");
+                dbgprintf("Terminal: Hide Cursor escapecode received. Not needed: ignored.\n");
             else
-                dbgprintf("Terminal: Show Cursor escapecode recieved. Not needed: ignored.\n");
+                dbgprintf("Terminal: Show Cursor escapecode received. Not needed: ignored.\n");
             break;
         default:
             break;
@@ -576,9 +576,14 @@ void Terminal::execute_xterm_command()
         m_client.set_window_title(params[1]);
         break;
     case 8:
-        m_current_attribute.href = params[2];
-        // FIXME: Respect the provided ID
-        m_current_attribute.href_id = String::format("%u", m_next_href_id++);
+        if (params[2].is_empty()) {
+            m_current_attribute.href = String();
+            m_current_attribute.href_id = String();
+        } else {
+            m_current_attribute.href = params[2];
+            // FIXME: Respect the provided ID
+            m_current_attribute.href_id = String::format("%u", m_next_href_id++);
+        }
         break;
     case 9:
         m_client.set_window_progress(numeric_params[1], numeric_params[2]);
@@ -1021,37 +1026,51 @@ void Terminal::handle_key_press(KeyCode key, u32 code_point, u8 flags)
     bool ctrl = flags & Mod_Ctrl;
     bool alt = flags & Mod_Alt;
     bool shift = flags & Mod_Shift;
+    unsigned modifier_mask = int(shift) + (int(alt) << 1) + (int(ctrl) << 2);
+
+    auto emit_final_with_modifier = [this, modifier_mask](char final) {
+        if (modifier_mask)
+            emit_string(String::format("\e[1;%d%c", modifier_mask + 1, final));
+        else
+            emit_string(String::format("\e[%c", final));
+    };
+    auto emit_tilde_with_modifier = [this, modifier_mask](unsigned num) {
+        if (modifier_mask)
+            emit_string(String::format("\e[%d;%d~", num, modifier_mask + 1));
+        else
+            emit_string(String::format("\e[%d~", num));
+    };
 
     switch (key) {
     case KeyCode::Key_Up:
-        emit_string(ctrl ? "\033[OA" : "\033[A");
+        emit_final_with_modifier('A');
         return;
     case KeyCode::Key_Down:
-        emit_string(ctrl ? "\033[OB" : "\033[B");
+        emit_final_with_modifier('B');
         return;
     case KeyCode::Key_Right:
-        emit_string(ctrl ? "\033[OC" : "\033[C");
+        emit_final_with_modifier('C');
         return;
     case KeyCode::Key_Left:
-        emit_string(ctrl ? "\033[OD" : "\033[D");
+        emit_final_with_modifier('D');
         return;
     case KeyCode::Key_Insert:
-        emit_string("\033[2~");
+        emit_tilde_with_modifier(2);
         return;
     case KeyCode::Key_Delete:
-        emit_string("\033[3~");
+        emit_tilde_with_modifier(3);
         return;
     case KeyCode::Key_Home:
-        emit_string("\033[H");
+        emit_final_with_modifier('H');
         return;
     case KeyCode::Key_End:
-        emit_string("\033[F");
+        emit_final_with_modifier('F');
         return;
     case KeyCode::Key_PageUp:
-        emit_string("\033[5~");
+        emit_tilde_with_modifier(5);
         return;
     case KeyCode::Key_PageDown:
-        emit_string("\033[6~");
+        emit_tilde_with_modifier(6);
         return;
     default:
         break;

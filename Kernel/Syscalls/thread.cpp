@@ -36,22 +36,16 @@ namespace Kernel {
 int Process::sys$create_thread(void* (*entry)(void*), Userspace<const Syscall::SC_create_thread_params*> user_params)
 {
     REQUIRE_PROMISE(thread);
-    if (!validate_read((const void*)entry, sizeof(void*)))
-        return -EFAULT;
 
     Syscall::SC_create_thread_params params;
-    if (!validate_read_and_copy_typed(&params, user_params))
+    if (!copy_from_user(&params, user_params))
         return -EFAULT;
 
     unsigned detach_state = params.m_detach_state;
     int schedule_priority = params.m_schedule_priority;
-    Userspace<void*> stack_location = params.m_stack_location;
     unsigned stack_size = params.m_stack_size;
 
-    if (!validate_write(stack_location, stack_size))
-        return -EFAULT;
-
-    u32 user_stack_address = reinterpret_cast<u32>(stack_location.ptr()) + stack_size;
+    auto user_stack_address = (u8*)params.m_stack_location + stack_size;
 
     if (!MM.validate_user_stack(*this, VirtualAddress(user_stack_address - 4)))
         return -EFAULT;
@@ -77,15 +71,18 @@ int Process::sys$create_thread(void* (*entry)(void*), Userspace<const Syscall::S
     thread->set_name(builder.to_string());
 
     thread->set_priority(requested_thread_priority);
-    thread->set_joinable(is_thread_joinable);
+    if (!is_thread_joinable)
+        thread->detach();
 
     auto& tss = thread->tss();
     tss.eip = (FlatPtr)entry;
     tss.eflags = 0x0202;
     tss.cr3 = page_directory().cr3();
-    tss.esp = user_stack_address;
+    tss.esp = (u32)user_stack_address;
 
-    thread->make_thread_specific_region({});
+    auto tsr_result = thread->make_thread_specific_region({});
+    if (tsr_result.is_error())
+        return tsr_result.error();
     thread->set_state(Thread::State::Runnable);
     return thread->tid().value();
 }
@@ -105,26 +102,22 @@ void Process::sys$exit_thread(Userspace<void*> exit_value)
 int Process::sys$detach_thread(pid_t tid)
 {
     REQUIRE_PROMISE(thread);
-    InterruptDisabler disabler;
-    auto* thread = Thread::from_tid(tid);
+    auto thread = Thread::from_tid(tid);
     if (!thread || thread->pid() != pid())
         return -ESRCH;
 
     if (!thread->is_joinable())
         return -EINVAL;
 
-    thread->set_joinable(false);
+    thread->detach();
     return 0;
 }
 
 int Process::sys$join_thread(pid_t tid, Userspace<void**> exit_value)
 {
     REQUIRE_PROMISE(thread);
-    if (exit_value && !validate_write_typed(exit_value))
-        return -EFAULT;
 
-    InterruptDisabler disabler;
-    auto* thread = Thread::from_tid(tid);
+    auto thread = Thread::from_tid(tid);
     if (!thread || thread->pid() != pid())
         return -ESRCH;
 
@@ -132,47 +125,30 @@ int Process::sys$join_thread(pid_t tid, Userspace<void**> exit_value)
     if (thread == current_thread)
         return -EDEADLK;
 
-    if (thread->m_joinee == current_thread)
-        return -EDEADLK;
-
-    ASSERT(thread->m_joiner != current_thread);
-    if (thread->m_joiner)
-        return -EINVAL;
-
-    if (!thread->is_joinable())
-        return -EINVAL;
-
     void* joinee_exit_value = nullptr;
 
     // NOTE: pthread_join() cannot be interrupted by signals. Only by death.
     for (;;) {
-        auto result = current_thread->block<Thread::JoinBlocker>(nullptr, *thread, joinee_exit_value);
-        if (result == Thread::BlockResult::InterruptedByDeath) {
-            // NOTE: This cleans things up so that Thread::finalize() won't
-            //       get confused about a missing joiner when finalizing the joinee.
-            InterruptDisabler disabler_t;
-
-            if (current_thread->m_joinee) {
-                current_thread->m_joinee->m_joiner = nullptr;
-                current_thread->m_joinee = nullptr;
-            }
-
+        KResult try_join_result(KSuccess);
+        auto result = current_thread->block<Thread::JoinBlocker>(nullptr, *thread, try_join_result, joinee_exit_value);
+        if (result == Thread::BlockResult::NotBlocked) {
+            if (try_join_result.is_error())
+                return try_join_result.error();
             break;
         }
+        if (result == Thread::BlockResult::InterruptedByDeath)
+            break;
     }
 
-    // NOTE: 'thread' is very possibly deleted at this point. Clear it just to be safe.
-    thread = nullptr;
-
-    if (exit_value)
-        copy_to_user(exit_value, &joinee_exit_value);
+    if (exit_value && !copy_to_user(exit_value, &joinee_exit_value))
+        return -EFAULT;
     return 0;
 }
 
 int Process::sys$set_thread_name(pid_t tid, Userspace<const char*> user_name, size_t user_name_length)
 {
     REQUIRE_PROMISE(thread);
-    auto name = validate_and_copy_string_from_user(user_name, user_name_length);
+    auto name = copy_string_from_user(user_name, user_name_length);
     if (name.is_null())
         return -EFAULT;
 
@@ -180,12 +156,11 @@ int Process::sys$set_thread_name(pid_t tid, Userspace<const char*> user_name, si
     if (name.length() > max_thread_name_size)
         return -EINVAL;
 
-    InterruptDisabler disabler;
-    auto* thread = Thread::from_tid(tid);
+    auto thread = Thread::from_tid(tid);
     if (!thread || thread->pid() != pid())
         return -ESRCH;
 
-    thread->set_name(name);
+    thread->set_name(move(name));
     return 0;
 }
 
@@ -195,18 +170,17 @@ int Process::sys$get_thread_name(pid_t tid, Userspace<char*> buffer, size_t buff
     if (buffer_size == 0)
         return -EINVAL;
 
-    if (!validate_write(buffer, buffer_size))
-        return -EFAULT;
-
-    InterruptDisabler disabler;
-    auto* thread = Thread::from_tid(tid);
+    auto thread = Thread::from_tid(tid);
     if (!thread || thread->pid() != pid())
         return -ESRCH;
 
-    if (thread->name().length() + 1 > (size_t)buffer_size)
+    // We must make a temporary copy here to avoid a race with sys$set_thread_name
+    auto thread_name = thread->name();
+    if (thread_name.length() + 1 > (size_t)buffer_size)
         return -ENAMETOOLONG;
 
-    copy_to_user(buffer, thread->name().characters(), thread->name().length() + 1);
+    if (!copy_to_user(buffer, thread_name.characters(), thread_name.length() + 1))
+        return -EFAULT;
     return 0;
 }
 

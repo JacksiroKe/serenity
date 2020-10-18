@@ -29,7 +29,7 @@
 #include <bits/stdint.h>
 
 #ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
+#    define PAGE_SIZE 4096
 #endif
 
 #define PATH_MAX 4096
@@ -67,3 +67,5 @@
 #define ARG_MAX 65536
 
 #define PTHREAD_STACK_MIN 65536
+
+#define SSIZE_MAX 2147483647

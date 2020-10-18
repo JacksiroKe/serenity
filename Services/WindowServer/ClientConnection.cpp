@@ -31,7 +31,6 @@
 #include <WindowServer/AppletManager.h>
 #include <WindowServer/ClientConnection.h>
 #include <WindowServer/Compositor.h>
-#include <WindowServer/EventLoop.h>
 #include <WindowServer/Menu.h>
 #include <WindowServer/MenuBar.h>
 #include <WindowServer/MenuItem.h>
@@ -78,7 +77,7 @@ ClientConnection* ClientConnection::from_client_id(int client_id)
 }
 
 ClientConnection::ClientConnection(NonnullRefPtr<Core::LocalSocket> client_socket, int client_id)
-    : IPC::ClientConnection<WindowServerEndpoint>(*this, move(client_socket), client_id)
+    : IPC::ClientConnection<WindowClientEndpoint, WindowServerEndpoint>(*this, move(client_socket), client_id)
 {
     if (!s_connections)
         s_connections = new HashMap<int, NonnullRefPtr<ClientConnection>>;
@@ -207,7 +206,7 @@ OwnPtr<Messages::WindowServer::AddMenuItemResponse> ClientConnection::handle(con
         auto icon_buffer = SharedBuffer::create_from_shbuf_id(message.icon_buffer_id());
         if (!icon_buffer)
             return nullptr;
-        // FIXME: Verify that the icon buffer can accomodate a 16x16 bitmap view.
+        // FIXME: Verify that the icon buffer can accommodate a 16x16 bitmap view.
         auto shared_icon = Gfx::Bitmap::create_with_shared_buffer(Gfx::BitmapFormat::RGBA32, icon_buffer.release_nonnull(), { 16, 16 });
         menu_item->set_icon(shared_icon);
     }
@@ -723,16 +722,18 @@ OwnPtr<Messages::WindowServer::GreetResponse> ClientConnection::handle(const Mes
 
 void ClientConnection::handle(const Messages::WindowServer::WM_SetWindowTaskbarRect& message)
 {
+    // Because the Taskbar (which should be the only user of this API) does not own the
+    // window or the client id, there is a possibility that it may send this message for
+    // a window or client that may have been destroyed already. This is not an error,
+    // and we should not call did_misbehave() for either.
     auto* client = ClientConnection::from_client_id(message.client_id());
-    if (!client) {
-        did_misbehave("WM_SetWindowTaskbarRect: Bad client ID");
+    if (!client)
         return;
-    }
+
     auto it = client->m_windows.find(message.window_id());
-    if (it == client->m_windows.end()) {
-        did_misbehave("WM_SetWindowTaskbarRect: Bad window ID");
+    if (it == client->m_windows.end())
         return;
-    }
+
     auto& window = *(*it).value;
     window.set_taskbar_rect(message.rect());
 }

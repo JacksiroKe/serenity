@@ -25,11 +25,11 @@
  */
 
 #include <AK/StringBuilder.h>
-#include <LibJS/Runtime/StringIterator.h>
-#include <LibJS/Runtime/StringIteratorPrototype.h>
 #include <LibJS/Runtime/Error.h>
 #include <LibJS/Runtime/GlobalObject.h>
 #include <LibJS/Runtime/IteratorOperations.h>
+#include <LibJS/Runtime/StringIterator.h>
+#include <LibJS/Runtime/StringIteratorPrototype.h>
 
 namespace JS {
 
@@ -40,10 +40,10 @@ StringIteratorPrototype::StringIteratorPrototype(GlobalObject& global_object)
 
 void StringIteratorPrototype::initialize(GlobalObject& global_object)
 {
+    auto& vm = this->vm();
     Object::initialize(global_object);
-
-    define_native_function("next", next, 0, Attribute::Configurable | Attribute::Writable);
-    define_property(global_object.interpreter().well_known_symbol_to_string_tag(), js_string(global_object.heap(), "String Iterator"), Attribute::Configurable);
+    define_native_function(vm.names.next, next, 0, Attribute::Configurable | Attribute::Writable);
+    define_property(vm.well_known_symbol_to_string_tag(), js_string(global_object.heap(), "String Iterator"), Attribute::Configurable);
 }
 
 StringIteratorPrototype::~StringIteratorPrototype()
@@ -52,9 +52,9 @@ StringIteratorPrototype::~StringIteratorPrototype()
 
 JS_DEFINE_NATIVE_FUNCTION(StringIteratorPrototype::next)
 {
-    auto this_value = interpreter.this_value(global_object);
+    auto this_value = vm.this_value(global_object);
     if (!this_value.is_object() || !this_value.as_object().is_string_iterator_object()) {
-        interpreter.throw_exception<TypeError>(ErrorType::NotA, "String Iterator");
+        vm.throw_exception<TypeError>(global_object, ErrorType::NotA, "String Iterator");
         return {};
     }
 
@@ -74,7 +74,7 @@ JS_DEFINE_NATIVE_FUNCTION(StringIteratorPrototype::next)
     builder.append_code_point(*utf8_iterator);
     ++utf8_iterator;
 
-    return create_iterator_result_object(global_object, js_string(interpreter, builder.to_string()), false);
+    return create_iterator_result_object(global_object, js_string(vm, builder.to_string()), false);
 }
 
 }

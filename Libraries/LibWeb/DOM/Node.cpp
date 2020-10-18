@@ -26,7 +26,6 @@
 
 #include <AK/StringBuilder.h>
 #include <LibJS/AST.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Function.h>
 #include <LibJS/Runtime/ScriptFunction.h>
 #include <LibWeb/Bindings/EventWrapper.h>
@@ -51,7 +50,8 @@
 namespace Web::DOM {
 
 Node::Node(Document& document, NodeType type)
-    : m_document(&document)
+    : EventTarget(static_cast<Bindings::ScriptExecutionContext&>(document))
+    , m_document(&document)
     , m_type(type)
 {
 }
@@ -204,6 +204,15 @@ bool Node::is_editable() const
 Bindings::EventTargetWrapper* Node::create_wrapper(JS::GlobalObject& global_object)
 {
     return wrap(global_object, *this);
+}
+
+void Node::removed_last_ref()
+{
+    if (is<Document>(*this)) {
+        downcast<Document>(*this).removed_last_ref();
+        return;
+    }
+    delete this;
 }
 
 }

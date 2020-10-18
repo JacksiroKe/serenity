@@ -47,8 +47,7 @@
 #include <LibGUI/TreeView.h>
 #include <LibGUI/Window.h>
 #include <LibMarkdown/Document.h>
-#include <LibWeb/Layout/LayoutNode.h>
-#include <LibWeb/InProcessWebView.h>
+#include <LibWeb/OutOfProcessWebView.h>
 #include <libgen.h>
 #include <stdio.h>
 #include <string.h>
@@ -78,6 +77,11 @@ int main(int argc, char* argv[])
     }
 
     if (unveil("/tmp/portal/launch", "rw") < 0) {
+        perror("unveil");
+        return 1;
+    }
+
+    if (unveil("/tmp/portal/webcontent", "rw") < 0) {
         perror("unveil");
         return 1;
     }
@@ -122,25 +126,12 @@ int main(int argc, char* argv[])
     auto& search_list_view = search_view.add<GUI::ListView>();
     search_box.set_preferred_size(0, 20);
     search_box.set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
-    search_box.set_text("Search...");
-    search_box.on_focusin = [&] {
-        if (search_box.text() == "Search...")
-            search_box.set_text("");
-    };
+    search_box.set_placeholder("Search...");
     search_box.on_change = [&] {
         if (auto model = search_list_view.model()) {
             auto& search_model = *static_cast<GUI::FilteringProxyModel*>(model);
             search_model.set_filter_term(search_box.text());
             search_model.update();
-        }
-    };
-    search_box.on_focusout = [&] {
-        if (search_box.text().is_empty()) {
-            if (auto model = search_list_view.model()) {
-                auto& search_model = *static_cast<GUI::FilteringProxyModel*>(model);
-                search_model.set_filter_term("");
-            }
-            search_box.set_text("Search...");
         }
     };
     search_list_view.set_model(GUI::FilteringProxyModel::construct(model));
@@ -150,7 +141,7 @@ int main(int argc, char* argv[])
     left_tab_bar.set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
     left_tab_bar.set_preferred_size(200, 500);
 
-    auto& page_view = splitter.add<Web::InProcessWebView>();
+    auto& page_view = splitter.add<Web::OutOfProcessWebView>();
 
     History history;
 
@@ -164,7 +155,7 @@ int main(int argc, char* argv[])
 
     auto open_page = [&](const String& path) {
         if (path.is_null()) {
-            page_view.set_document(nullptr);
+            page_view.load_empty_document();
             return;
         }
 
@@ -185,13 +176,13 @@ int main(int argc, char* argv[])
         page_view.load_html(html, URL::create_with_file_protocol(path));
 
         String page_and_section = model->page_and_section(tree_view.selection().first());
-        window->set_title(String::format("%s - Help", page_and_section.characters()));
+        window->set_title(String::formatted("{} - Help", page_and_section));
     };
 
     tree_view.on_selection_change = [&] {
         String path = model->page_path(tree_view.selection().first());
         if (path.is_null()) {
-            page_view.set_document(nullptr);
+            page_view.load_empty_document();
             window->set_title("Help");
             return;
         }
@@ -207,7 +198,7 @@ int main(int argc, char* argv[])
     auto open_external = [&](auto& url) {
         if (!Desktop::Launcher::open(url)) {
             GUI::MessageBox::show(window,
-                String::format("The link to '%s' could not be opened.", url.to_string().characters()),
+                String::formatted("The link to '{}' could not be opened.", url),
                 "Failed to open link",
                 GUI::MessageBox::Type::Error);
         }
@@ -220,12 +211,12 @@ int main(int argc, char* argv[])
             auto& search_model = *static_cast<GUI::FilteringProxyModel*>(model);
             index = search_model.map(index);
         } else {
-            page_view.set_document(nullptr);
+            page_view.load_empty_document();
             return;
         }
         String path = model->page_path(index);
         if (path.is_null()) {
-            page_view.set_document(nullptr);
+            page_view.load_empty_document();
             return;
         }
         tree_view.selection().clear();
@@ -247,7 +238,7 @@ int main(int argc, char* argv[])
         }
         auto tree_view_index = model->index_from_path(path);
         if (tree_view_index.has_value()) {
-            dbg() << "Found path _" << path << "_ in model at index " << tree_view_index.value();
+            dbgln("Found path _{}_ in model at index {}", path, tree_view_index.value());
             tree_view.selection().set(tree_view_index.value());
             return;
         }

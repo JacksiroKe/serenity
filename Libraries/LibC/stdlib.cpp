@@ -452,7 +452,6 @@ double strtod(const char* str, char** endptr)
                 digits_usable = true;
                 break;
             case DigitConsumeDecision::PosOverflow:
-                // fallthrough
             case DigitConsumeDecision::NegOverflow:
                 is_a_digit = true;
                 digits_overflow = true;
@@ -509,7 +508,6 @@ double strtod(const char* str, char** endptr)
                     exponent_usable = true;
                     break;
                 case DigitConsumeDecision::PosOverflow:
-                    // fallthrough
                 case DigitConsumeDecision::NegOverflow:
                     is_a_digit = true;
                     exponent_overflow = true;
@@ -762,7 +760,7 @@ void* bsearch(const void* key, const void* base, size_t nmemb, size_t size, int 
         nmemb /= 2;
     }
 
-    return NULL;
+    return nullptr;
 }
 
 div_t div(int numerator, int denominator)
@@ -796,7 +794,7 @@ size_t mbstowcs(wchar_t*, const char*, size_t)
     ASSERT_NOT_REACHED();
 }
 
-size_t mbtowc(wchar_t* wch, const char* data, size_t data_size)
+int mbtowc(wchar_t* wch, const char* data, size_t data_size)
 {
     // FIXME: This needs a real implementation.
     UNUSED_PARAM(data_size);
@@ -901,7 +899,7 @@ long long strtoll(const char* str, char** endptr, int base)
                 // The very first actual digit must pass here:
                 digits_usable = true;
                 break;
-            case DigitConsumeDecision::PosOverflow: // fall-through
+            case DigitConsumeDecision::PosOverflow:
             case DigitConsumeDecision::NegOverflow:
                 is_a_digit = true;
                 overflow = true;
@@ -977,7 +975,7 @@ unsigned long long strtoull(const char* str, char** endptr, int base)
                 // The very first actual digit must pass here:
                 digits_usable = true;
                 break;
-            case DigitConsumeDecision::PosOverflow: // fall-through
+            case DigitConsumeDecision::PosOverflow:
             case DigitConsumeDecision::NegOverflow:
                 is_a_digit = true;
                 overflow = true;
@@ -1014,7 +1012,7 @@ unsigned long long strtoull(const char* str, char** endptr, int base)
 
 // Serenity's PRNG is not cryptographically secure. Do not rely on this for
 // any real crypto! These functions (for now) are for compatibility.
-// TODO: In the future, rand can be made determinstic and this not.
+// TODO: In the future, rand can be made deterministic and this not.
 uint32_t arc4random(void)
 {
     char buf[4];

@@ -30,12 +30,13 @@
 #include <LibIPC/ClientConnection.h>
 #include <LibWeb/Forward.h>
 #include <WebContent/Forward.h>
+#include <WebContent/WebContentClientEndpoint.h>
 #include <WebContent/WebContentServerEndpoint.h>
 
 namespace WebContent {
 
 class ClientConnection final
-    : public IPC::ClientConnection<WebContentServerEndpoint>
+    : public IPC::ClientConnection<WebContentClientEndpoint, WebContentServerEndpoint>
     , public WebContentServerEndpoint {
     C_OBJECT(ClientConnection);
 
@@ -52,6 +53,7 @@ private:
     virtual OwnPtr<Messages::WebContentServer::GreetResponse> handle(const Messages::WebContentServer::Greet&) override;
     virtual void handle(const Messages::WebContentServer::UpdateSystemTheme&) override;
     virtual void handle(const Messages::WebContentServer::LoadURL&) override;
+    virtual void handle(const Messages::WebContentServer::LoadHTML&) override;
     virtual void handle(const Messages::WebContentServer::Paint&) override;
     virtual void handle(const Messages::WebContentServer::SetViewportRect&) override;
     virtual void handle(const Messages::WebContentServer::MouseDown&) override;

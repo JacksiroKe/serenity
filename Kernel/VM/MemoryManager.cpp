@@ -33,6 +33,7 @@
 #include <Kernel/Heap/kmalloc.h>
 #include <Kernel/Multiboot.h>
 #include <Kernel/Process.h>
+#include <Kernel/StdLib.h>
 #include <Kernel/VM/AnonymousVMObject.h>
 #include <Kernel/VM/ContiguousVMObject.h>
 #include <Kernel/VM/MemoryManager.h>
@@ -40,7 +41,6 @@
 #include <Kernel/VM/PhysicalRegion.h>
 #include <Kernel/VM/PurgeableVMObject.h>
 #include <Kernel/VM/SharedInodeVMObject.h>
-#include <Kernel/StdLib.h>
 
 //#define MM_DEBUG
 //#define PAGE_FAULT_DEBUG
@@ -151,7 +151,7 @@ void MemoryManager::parse_memory_map()
         klog() << "MM: considering memory at " << String::format("%p", (FlatPtr)mmap->addr) << " - " << String::format("%p", (FlatPtr)(mmap->addr + mmap->len));
 #endif
 
-        for (size_t page_base = mmap->addr; page_base < (mmap->addr + mmap->len); page_base += PAGE_SIZE) {
+        for (size_t page_base = mmap->addr; page_base <= (mmap->addr + mmap->len); page_base += PAGE_SIZE) {
             auto addr = PhysicalAddress(page_base);
 
             if (addr.get() < used_range_end.get() && addr.get() >= used_range_start.get())
@@ -235,6 +235,7 @@ PageTableEntry* MemoryManager::ensure_pte(PageDirectory& page_directory, Virtual
             // we're writing to the correct underlying physical page
             pd = quickmap_pd(page_directory, page_directory_table_index);
             ASSERT(&pde == &pd[page_directory_index]); // Sanity check
+
             ASSERT(!pde.is_present()); // Should have not changed
         }
 #ifdef MM_DEBUG
@@ -765,39 +766,6 @@ bool MemoryManager::validate_user_stack(const Process& process, VirtualAddress v
     ScopedSpinLock lock(s_mm_lock);
     auto* region = user_region_from_vaddr(const_cast<Process&>(process), vaddr);
     return region && region->is_user_accessible() && region->is_stack();
-}
-
-bool MemoryManager::validate_kernel_read(const Process& process, VirtualAddress vaddr, size_t size) const
-{
-    ScopedSpinLock lock(s_mm_lock);
-    return validate_range<AccessSpace::Kernel, AccessType::Read>(process, vaddr, size);
-}
-
-bool MemoryManager::can_read_without_faulting(const Process& process, VirtualAddress vaddr, size_t size) const
-{
-    // FIXME: Use the size argument!
-    UNUSED_PARAM(size);
-    ScopedSpinLock lock(s_mm_lock);
-    auto* pte = const_cast<MemoryManager*>(this)->pte(process.page_directory(), vaddr);
-    if (!pte)
-        return false;
-    return pte->is_present();
-}
-
-bool MemoryManager::validate_user_read(const Process& process, VirtualAddress vaddr, size_t size) const
-{
-    if (!is_user_address(vaddr))
-        return false;
-    ScopedSpinLock lock(s_mm_lock);
-    return validate_range<AccessSpace::User, AccessType::Read>(process, vaddr, size);
-}
-
-bool MemoryManager::validate_user_write(const Process& process, VirtualAddress vaddr, size_t size) const
-{
-    if (!is_user_address(vaddr))
-        return false;
-    ScopedSpinLock lock(s_mm_lock);
-    return validate_range<AccessSpace::User, AccessType::Write>(process, vaddr, size);
 }
 
 void MemoryManager::register_vmobject(VMObject& vmobject)

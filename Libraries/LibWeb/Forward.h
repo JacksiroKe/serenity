@@ -132,10 +132,26 @@ class HTMLVideoElement;
 class ImageData;
 }
 
+namespace Web::HighResolutionTime {
+class Performance;
+}
+
+namespace Web::SVG {
+class SVGElement;
+class SVGGeometryElement;
+class SVGGraphicsElement;
+class SVGPathElement;
+class SVGSVGElement;
+}
+
 namespace Web {
 class EventHandler;
 class Frame;
+class FrameLoader;
+class InProcessWebView;
 class LayoutBlock;
+class LayoutButton;
+class LayoutCheckBox;
 class LayoutDocument;
 class LayoutNode;
 class LayoutNodeWithStyle;
@@ -144,9 +160,9 @@ class LineBox;
 class LineBoxFragment;
 class LoadRequest;
 class Origin;
+class OutOfProcessWebView;
 class Page;
 class PageClient;
-class InProcessWebView;
 class PaintContext;
 class Resource;
 class ResourceLoader;
@@ -239,6 +255,13 @@ class ImageDataWrapper;
 class LocationObject;
 class MouseEventWrapper;
 class NodeWrapper;
+class PerformanceWrapper;
+class ScriptExecutionContext;
+class SVGElementWrapper;
+class SVGGeometryElementWrapper;
+class SVGGraphicsElementWrapper;
+class SVGPathElementWrapper;
+class SVGSVGElementWrapper;
 class TextWrapper;
 class UIEventWrapper;
 class WindowObject;

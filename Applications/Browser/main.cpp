@@ -30,6 +30,7 @@
 #include "Tab.h"
 #include "WindowActions.h"
 #include <AK/StringBuilder.h>
+#include <Applications/Browser/BrowserWindowUI.h>
 #include <LibCore/ArgsParser.h>
 #include <LibCore/ConfigFile.h>
 #include <LibCore/File.h>
@@ -62,7 +63,7 @@ static String bookmarks_file_path()
 int main(int argc, char** argv)
 {
     if (getuid() == 0) {
-        fprintf(stderr, "Refusing to run as root\n");
+        warn() << "Refusing to run as root";
         return 1;
     }
 
@@ -134,21 +135,16 @@ int main(int argc, char** argv)
     window->set_title("Browser");
 
     auto& widget = window->set_main_widget<GUI::Widget>();
-    widget.set_fill_with_background_color(true);
-    widget.set_layout<GUI::VerticalBoxLayout>();
-    widget.layout()->set_spacing(2);
+    widget.load_from_json(browser_window_ui_json);
 
-    auto& tab_widget = widget.add<GUI::TabWidget>();
-    tab_widget.set_text_alignment(Gfx::TextAlignment::CenterLeft);
-    tab_widget.set_container_padding(0);
-    tab_widget.set_uniform_tabs(true);
+    auto& tab_widget = static_cast<GUI::TabWidget&>(*widget.find_descendant_by_name("tab_widget"));
 
     auto default_favicon = Gfx::Bitmap::load_from_file("/res/icons/16x16/filetype-html.png");
     ASSERT(default_favicon);
 
     tab_widget.on_change = [&](auto& active_widget) {
         auto& tab = static_cast<Browser::Tab&>(active_widget);
-        window->set_title(String::format("%s - Browser", tab.title().characters()));
+        window->set_title(String::formatted("{} - Browser", tab.title()));
         tab.did_become_active();
     };
 
@@ -175,7 +171,7 @@ int main(int argc, char** argv)
         new_tab.on_title_change = [&](auto title) {
             tab_widget.set_tab_title(new_tab, title);
             if (tab_widget.active_widget() == &new_tab)
-                window->set_title(String::format("%s - Browser", title.characters()));
+                window->set_title(String::formatted("{} - Browser", title));
         };
 
         new_tab.on_favicon_change = [&](auto& bitmap) {
@@ -197,7 +193,7 @@ int main(int argc, char** argv)
 
         new_tab.load(url);
 
-        dbg() << "Added new tab " << &new_tab << ", loading " << url;
+        dbgln("Added new tab {:p}, loading {}", &new_tab, url);
 
         if (activate)
             tab_widget.set_active_widget(&new_tab);

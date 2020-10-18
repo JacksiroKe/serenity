@@ -25,9 +25,12 @@
  */
 
 #include "TextEditorWidget.h"
+#include <AK/JsonObject.h>
+#include <AK/JsonValue.h>
 #include <AK/Optional.h>
 #include <AK/StringBuilder.h>
 #include <AK/URL.h>
+#include <Applications/TextEditor/MainWindowUI.h>
 #include <LibCore/File.h>
 #include <LibCore/MimeData.h>
 #include <LibDesktop/Launcher.h>
@@ -44,6 +47,7 @@
 #include <LibGUI/Menu.h>
 #include <LibGUI/MenuBar.h>
 #include <LibGUI/MessageBox.h>
+#include <LibGUI/ShellSyntaxHighlighter.h>
 #include <LibGUI/Splitter.h>
 #include <LibGUI/StatusBar.h>
 #include <LibGUI/TextBox.h>
@@ -52,21 +56,16 @@
 #include <LibGUI/ToolBarContainer.h>
 #include <LibGfx/Font.h>
 #include <LibMarkdown/Document.h>
-#include <LibWeb/InProcessWebView.h>
+#include <LibWeb/OutOfProcessWebView.h>
 #include <string.h>
 
 TextEditorWidget::TextEditorWidget()
 {
-    set_fill_with_background_color(true);
-    set_layout<GUI::VerticalBoxLayout>();
-    layout()->set_spacing(2);
+    load_from_json(main_window_ui_json);
 
-    auto& toolbar_container = add<GUI::ToolBarContainer>();
-    auto& toolbar = toolbar_container.add<GUI::ToolBar>();
+    auto& toolbar = static_cast<GUI::ToolBar&>(*find_descendant_by_name("toolbar"));
 
-    auto& splitter = add<GUI::HorizontalSplitter>();
-
-    m_editor = splitter.add<GUI::TextEditor>();
+    m_editor = static_cast<GUI::TextEditor&>(*find_descendant_by_name("editor"));
     m_editor->set_ruler_visible(true);
     m_editor->set_automatic_indentation_enabled(true);
     m_editor->set_line_wrapping_enabled(true);
@@ -86,8 +85,7 @@ TextEditorWidget::TextEditorWidget()
             update_title();
     };
 
-    m_page_view = splitter.add<Web::InProcessWebView>();
-    m_page_view->set_visible(false);
+    m_page_view = static_cast<Web::OutOfProcessWebView&>(*find_descendant_by_name("webview"));
     m_page_view->on_link_hover = [this](auto& url) {
         if (url.is_valid())
             m_statusbar->set_text(url.to_string());
@@ -98,33 +96,17 @@ TextEditorWidget::TextEditorWidget()
         if (!Desktop::Launcher::open(url)) {
             GUI::MessageBox::show(
                 window(),
-                String::format("The link to '%s' could not be opened.", url.to_string().characters()),
+                String::formatted("The link to '{}' could not be opened.", url),
                 "Failed to open link",
                 GUI::MessageBox::Type::Error);
         }
     };
 
-    m_find_replace_widget = add<GUI::Widget>();
-    m_find_replace_widget->set_fill_with_background_color(true);
-    m_find_replace_widget->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
-    m_find_replace_widget->set_preferred_size(0, 48);
-    m_find_replace_widget->set_layout<GUI::VerticalBoxLayout>();
-    m_find_replace_widget->layout()->set_margins({ 2, 2, 2, 4 });
-    m_find_replace_widget->set_visible(false);
+    m_find_replace_widget = *find_descendant_by_name("find_replace_widget");
 
-    m_find_widget = m_find_replace_widget->add<GUI::Widget>();
-    m_find_widget->set_fill_with_background_color(true);
-    m_find_widget->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
-    m_find_widget->set_preferred_size(0, 22);
-    m_find_widget->set_layout<GUI::HorizontalBoxLayout>();
-    m_find_widget->set_visible(false);
+    m_find_widget = *find_descendant_by_name("find_widget");
 
-    m_replace_widget = m_find_replace_widget->add<GUI::Widget>();
-    m_replace_widget->set_fill_with_background_color(true);
-    m_replace_widget->set_size_policy(GUI::SizePolicy::Fill, GUI::SizePolicy::Fixed);
-    m_replace_widget->set_preferred_size(0, 22);
-    m_replace_widget->set_layout<GUI::HorizontalBoxLayout>();
-    m_replace_widget->set_visible(false);
+    m_replace_widget = *find_descendant_by_name("replace_widget");
 
     m_find_textbox = m_find_widget->add<GUI::TextBox>();
     m_replace_textbox = m_replace_widget->add<GUI::TextBox>();
@@ -132,16 +114,16 @@ TextEditorWidget::TextEditorWidget()
     m_find_next_action = GUI::Action::create("Find next", { Mod_Ctrl, Key_G }, Gfx::Bitmap::load_from_file("/res/icons/16x16/find-next.png"), [&](auto&) {
         auto needle = m_find_textbox->text();
         if (needle.is_empty()) {
-            dbg() << "find_next(\"\")";
+            dbgln("find_next(\"\")");
             return;
         }
         auto found_range = m_editor->document().find_next(needle, m_editor->normalized_selection().end());
-        dbg() << "find_next(\"" << needle << "\") returned " << found_range;
+        dbgln("find_next(\"{}\") returned {}", needle, found_range);
         if (found_range.is_valid()) {
             m_editor->set_selection(found_range);
         } else {
             GUI::MessageBox::show(window(),
-                String::format("Not found: \"%s\"", needle.characters()),
+                String::formatted("Not found: \"{}\"", needle),
                 "Not found",
                 GUI::MessageBox::Type::Information);
         }
@@ -150,7 +132,7 @@ TextEditorWidget::TextEditorWidget()
     m_find_previous_action = GUI::Action::create("Find previous", { Mod_Ctrl | Mod_Shift, Key_G }, Gfx::Bitmap::load_from_file("/res/icons/16x16/find-previous.png"), [&](auto&) {
         auto needle = m_find_textbox->text();
         if (needle.is_empty()) {
-            dbg() << "find_prev(\"\")";
+            dbgln("find_prev(\"\")");
             return;
         }
 
@@ -160,12 +142,12 @@ TextEditorWidget::TextEditorWidget()
 
         auto found_range = m_editor->document().find_previous(needle, selection_start);
 
-        dbg() << "find_prev(\"" << needle << "\") returned " << found_range;
+        dbgln("find_prev(\"{}\") returned {}", needle, found_range);
         if (found_range.is_valid()) {
             m_editor->set_selection(found_range);
         } else {
             GUI::MessageBox::show(window(),
-                String::format("Not found: \"%s\"", needle.characters()),
+                String::formatted("Not found: \"{}\"", needle),
                 "Not found",
                 GUI::MessageBox::Type::Information);
         }
@@ -189,7 +171,7 @@ TextEditorWidget::TextEditorWidget()
             m_editor->insert_at_cursor_or_replace_selection(substitute);
         } else {
             GUI::MessageBox::show(window(),
-                String::format("Not found: \"%s\"", needle.characters()),
+                String::formatted("Not found: \"{}\"", needle),
                 "Not found",
                 GUI::MessageBox::Type::Information);
         }
@@ -212,7 +194,7 @@ TextEditorWidget::TextEditorWidget()
             m_editor->insert_at_cursor_or_replace_selection(substitute);
         } else {
             GUI::MessageBox::show(window(),
-                String::format("Not found: \"%s\"", needle.characters()),
+                String::formatted("Not found: \"{}\"", needle),
                 "Not found",
                 GUI::MessageBox::Type::Information);
         }
@@ -232,14 +214,10 @@ TextEditorWidget::TextEditorWidget()
         }
     });
 
-    m_find_previous_button = m_find_widget->add<GUI::Button>("Find previous");
-    m_find_previous_button->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
-    m_find_previous_button->set_preferred_size(150, 0);
+    m_find_previous_button = static_cast<GUI::Button&>(*find_descendant_by_name("find_previous_button"));
     m_find_previous_button->set_action(*m_find_previous_action);
 
-    m_find_next_button = m_find_widget->add<GUI::Button>("Find next");
-    m_find_next_button->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
-    m_find_next_button->set_preferred_size(150, 0);
+    m_find_next_button = static_cast<GUI::Button&>(*find_descendant_by_name("find_next_button"));
     m_find_next_button->set_action(*m_find_next_action);
 
     m_find_textbox->on_return_pressed = [this] {
@@ -251,19 +229,13 @@ TextEditorWidget::TextEditorWidget()
         m_editor->set_focus(true);
     };
 
-    m_replace_previous_button = m_replace_widget->add<GUI::Button>("Replace previous");
-    m_replace_previous_button->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
-    m_replace_previous_button->set_preferred_size(100, 0);
+    m_replace_previous_button = static_cast<GUI::Button&>(*find_descendant_by_name("replace_previous_button"));
     m_replace_previous_button->set_action(*m_replace_previous_action);
 
-    m_replace_next_button = m_replace_widget->add<GUI::Button>("Replace next");
-    m_replace_next_button->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
-    m_replace_next_button->set_preferred_size(100, 0);
+    m_replace_next_button = static_cast<GUI::Button&>(*find_descendant_by_name("replace_next_button"));
     m_replace_next_button->set_action(*m_replace_next_action);
 
-    m_replace_all_button = m_replace_widget->add<GUI::Button>("Replace all");
-    m_replace_all_button->set_size_policy(GUI::SizePolicy::Fixed, GUI::SizePolicy::Fill);
-    m_replace_all_button->set_preferred_size(100, 0);
+    m_replace_all_button = static_cast<GUI::Button&>(*find_descendant_by_name("replace_all_button"));
     m_replace_all_button->set_action(*m_replace_all_action);
 
     m_replace_textbox->on_return_pressed = [this] {
@@ -292,7 +264,7 @@ TextEditorWidget::TextEditorWidget()
     m_editor->add_custom_context_menu_action(*m_find_next_action);
     m_editor->add_custom_context_menu_action(*m_find_previous_action);
 
-    m_statusbar = add<GUI::StatusBar>();
+    m_statusbar = static_cast<GUI::StatusBar&>(*find_descendant_by_name("statusbar"));
 
     m_editor->on_cursor_change = [this] { update_statusbar_cursor_position(); };
 
@@ -340,7 +312,7 @@ TextEditorWidget::TextEditorWidget()
 
         m_document_dirty = false;
         set_path(LexicalPath(save_path.value()));
-        dbg() << "Wrote document to " << save_path.value();
+        dbgln("Wrote document to {}", save_path.value());
     });
 
     m_save_action = GUI::Action::create("Save", { Mod_Ctrl, Key_S }, Gfx::Bitmap::load_from_file("/res/icons/16x16/save.png"), [&](const GUI::Action&) {
@@ -467,6 +439,13 @@ TextEditorWidget::TextEditorWidget()
     syntax_actions.add_action(*m_ini_highlight);
     syntax_menu.add_action(*m_ini_highlight);
 
+    m_shell_highlight = GUI::Action::create_checkable("Shell File", [&](auto&) {
+        m_editor->set_syntax_highlighter(make<GUI::ShellSyntaxHighlighter>());
+        m_editor->update();
+    });
+    syntax_actions.add_action(*m_shell_highlight);
+    syntax_menu.add_action(*m_shell_highlight);
+
     auto& help_menu = menubar->add_menu("Help");
     help_menu.add_action(GUI::Action::create("About", [&](auto&) {
         GUI::AboutDialog::show("Text Editor", Gfx::Bitmap::load_from_file("/res/icons/32x32/app-text-editor.png"), window());
@@ -537,7 +516,7 @@ void TextEditorWidget::open_sesame(const String& path)
 {
     auto file = Core::File::construct(path);
     if (!file->open(Core::IODevice::ReadOnly) && file->error() != ENOENT) {
-        GUI::MessageBox::show(window(), String::format("Opening \"%s\" failed: %s", path.characters(), strerror(errno)), "Error", GUI::MessageBox::Type::Error);
+        GUI::MessageBox::show(window(), String::formatted("Opening \"{}\" failed: {}", path, strerror(errno)), "Error", GUI::MessageBox::Type::Error);
         return;
     }
 
@@ -639,6 +618,6 @@ void TextEditorWidget::update_html_preview()
 void TextEditorWidget::update_statusbar_cursor_position()
 {
     StringBuilder builder;
-    builder.appendf("Line: %d, Column: %d", m_editor->cursor().line() + 1, m_editor->cursor().column());
+    builder.appendff("Line: {}, Column: {}", m_editor->cursor().line() + 1, m_editor->cursor().column());
     m_statusbar->set_text(builder.to_string());
 }

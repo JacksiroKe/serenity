@@ -27,8 +27,8 @@
 #pragma once
 
 #include <LibJS/Heap/Heap.h>
-#include <LibJS/Interpreter.h>
 #include <LibJS/Runtime/Object.h>
+#include <LibJS/Runtime/VM.h>
 
 namespace JS {
 
@@ -41,7 +41,12 @@ public:
 
     virtual ~GlobalObject() override;
 
+    Console& console() { return *m_console; }
+
     Shape* empty_object_shape() { return m_empty_object_shape; }
+
+    Shape* new_object_shape() { return m_new_object_shape; }
+    Shape* new_script_function_prototype_object_shape() { return m_new_script_function_prototype_object_shape; }
 
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName)            \
     ConstructorName* snake_name##_constructor() { return m_##snake_name##_constructor; } \
@@ -66,7 +71,11 @@ private:
     JS_DECLARE_NATIVE_FUNCTION(is_finite);
     JS_DECLARE_NATIVE_FUNCTION(parse_float);
 
+    NonnullOwnPtr<Console> m_console;
+
     Shape* m_empty_object_shape { nullptr };
+    Shape* m_new_object_shape { nullptr };
+    Shape* m_new_script_function_prototype_object_shape { nullptr };
 
 #define __JS_ENUMERATE(ClassName, snake_name, PrototypeName, ConstructorName) \
     ConstructorName* m_##snake_name##_constructor { nullptr };                \
@@ -78,18 +87,18 @@ private:
     Object* m_##snake_name##_prototype { nullptr };
     JS_ENUMERATE_ITERATOR_PROTOTYPES
 #undef __JS_ENUMERATE
-
 };
 
 template<typename ConstructorType>
 inline void GlobalObject::add_constructor(const FlyString& property_name, ConstructorType*& constructor, Object& prototype)
 {
+    auto& vm = this->vm();
     constructor = heap().allocate<ConstructorType>(*this, *this);
-    constructor->define_property("name", js_string(heap(), property_name), Attribute::Configurable);
-    if (interpreter().exception())
+    constructor->define_property(vm.names.name, js_string(heap(), property_name), Attribute::Configurable);
+    if (vm.exception())
         return;
-    prototype.define_property("constructor", constructor, Attribute::Writable | Attribute::Configurable);
-    if (interpreter().exception())
+    prototype.define_property(vm.names.constructor, constructor, Attribute::Writable | Attribute::Configurable);
+    if (vm.exception())
         return;
     define_property(property_name, constructor, Attribute::Writable | Attribute::Configurable);
 }

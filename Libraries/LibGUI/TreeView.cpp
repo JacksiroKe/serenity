@@ -99,8 +99,7 @@ void TreeView::doubleclick_event(MouseEvent& event)
         return;
 
     if (event.button() == MouseButton::Left) {
-        if (selection().first() != index)
-            selection().set(index);
+        set_cursor(index, SelectionUpdate::Set);
 
         if (model.row_count(index))
             toggle_index(index);
@@ -124,6 +123,23 @@ void TreeView::set_open_state_of_all_in_subtree(const ModelIndex& root, bool ope
         auto index = model()->index(row, column, root);
         set_open_state_of_all_in_subtree(index, open);
     }
+}
+
+void TreeView::expand_all_parents_of(const ModelIndex& index)
+{
+    if (!model())
+        return;
+
+    auto current = index;
+    while (current.is_valid()) {
+        ensure_metadata_for_index(current).open = true;
+        if (on_toggle)
+            on_toggle(current, true);
+        current = current.parent();
+    }
+    update_column_sizes();
+    update_content_size();
+    update();
 }
 
 void TreeView::expand_tree(const ModelIndex& root)
@@ -360,7 +376,7 @@ void TreeView::paint_event(PaintEvent& event)
     });
 }
 
-void TreeView::scroll_into_view(const ModelIndex& a_index, Orientation orientation)
+void TreeView::scroll_into_view(const ModelIndex& a_index, bool scroll_horizontally, bool scroll_vertically)
 {
     if (!a_index.is_valid())
         return;
@@ -372,7 +388,7 @@ void TreeView::scroll_into_view(const ModelIndex& a_index, Orientation orientati
         }
         return IterationDecision::Continue;
     });
-    ScrollableWidget::scroll_into_view(found_rect, orientation);
+    ScrollableWidget::scroll_into_view(found_rect, scroll_horizontally, scroll_vertically);
 }
 
 void TreeView::did_update_model(unsigned flags)
@@ -442,7 +458,7 @@ void TreeView::keydown_event(KeyEvent& event)
         }
         if (cursor_index.is_valid() && cursor_index.parent().is_valid()) {
             selection().set(cursor_index.parent());
-            scroll_into_view(selection().first(), Orientation::Vertical);
+            scroll_into_view(selection().first(), false, true);
             return;
         }
     }
@@ -461,7 +477,7 @@ void TreeView::keydown_event(KeyEvent& event)
             }
 
             selection().set(model()->index(0, model()->tree_column(), cursor_index));
-            scroll_into_view(selection().first(), Orientation::Vertical);
+            scroll_into_view(selection().first(), false, true);
             return;
         }
     }
@@ -494,7 +510,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate)
         });
         if (found_index.is_valid()) {
             selection().set(found_index);
-            scroll_into_view(selection().first(), Orientation::Vertical);
+            scroll_into_view(selection().first(), false, true);
             update();
         }
         break;
@@ -512,7 +528,7 @@ void TreeView::move_cursor(CursorMovement movement, SelectionUpdate)
         });
         if (found_index.is_valid()) {
             selection().set(found_index);
-            scroll_into_view(selection().first(), Orientation::Vertical);
+            scroll_into_view(selection().first(), false, true);
             update();
         }
         return;
